@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: "Hybrid SAGE Discussions"
+    url: "https://github.com/bioassembly/hybrid-sage/discussions"
+    about: "Community discussions, fleet configuration help, and feedback."

@@ -1,0 +1,34 @@
+{
+  "name": "hybrid-sage",
+  "version": "1.0.0",
+  "description": "Elastic Multi-Model Fleet Router & Local Execution Bridge for OpenCode and Antigravity",
+  "keywords": [
+    "opencode-plugin",
+    "opencode",
+    "hybrid-sage",
+    "strata",
+    "qwen",
+    "gemini",
+    "model-routing"
+  ],
+  "license": "MIT",
+  "author": {
+    "name": "bioassembly"
+  },
+  "main": "./.opencode/plugins/hybrid-sage.mjs",
+  "exports": {
+    ".": "./.opencode/plugins/hybrid-sage.mjs",
+    "./plugin": "./.opencode/plugins/hybrid-sage.mjs"
+  },
+  "files": [
+    "bin/",
+    "configs/",
+    "docs/",
+    "scripts/",
+    "skills/",
+    "plugins/",
+    ".opencode/",
+    "README.md",
+    "LICENSE"
+  ]
+}

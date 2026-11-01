@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+# sage — Unified Master CLI for Hybrid SAGE (OpenCode + Antigravity Fleet).
+
+set -euo pipefail
+
+# Follow symlinks to find the real repository root
+SOURCE="${BASH_SOURCE[0]}"
+while [[ -L "${SOURCE}" ]]; do
+    DIR="$(cd -P "$(dirname "${SOURCE}")" && pwd)"
+    SOURCE="$(readlink "${SOURCE}")"
+    [[ "${SOURCE}" != /* ]] && SOURCE="${DIR}/${SOURCE}"
+done
+BIN_DIR="$(cd -P "$(dirname "${SOURCE}")" && pwd)"
+REPO_DIR="$(cd "${BIN_DIR}/.." && pwd)"
+
+SUBCMD="${1:-help}"
+shift || true
+
+usage() {
+    cat <<EOF
+======================================================================
+⚡ Hybrid SAGE — Unified Local + Cloud AI Fleet CLI
+======================================================================
+Usage: sage <command> [arguments]
+
+Core Commands:
+  status                    Live fleet units, OpenCode slot 0, and shared bridge telemetry
+  route <prompt> [flags]    Classify a task across your fleet (add -x to execute immediately)
+  local <prompt> [flags]    Delegate a prompt/file directly to Local OpenCode ($0 cloud quota)
+  handoff <cmd> [dir]       Manage NOTES.md handoffs (status | plan | review | verify | exec)
+  memory <cmd> [query]      Inspect/search/backup shared MCP memory (status | list | search | backup)
+  test                      Run the full integration, health, negation, and elasticity test suite
+
+Examples:
+  sage status
+  sage route "Parse clinical LIMS CSV and anonymize NIK"
+  sage route -x "Write pytest unit tests for utils.py" -f utils.py
+  sage local -m test -f parser.py "Write comprehensive pytest unit tests for parser.py"
+  sage handoff plan
+  sage handoff verify
+  sage memory search "Hybrid SAGE"
+======================================================================
+EOF
+}
+
+case "${SUBCMD}" in
+    status)
+        exec bash "${REPO_DIR}/scripts/fleet-status.sh" "$@"
+        ;;
+    route)
+        exec "${BIN_DIR}/sage-route" "$@"
+        ;;
+    local)
+        exec "${BIN_DIR}/sage-local" "$@"
+        ;;
+    handoff)
+        exec bash "${REPO_DIR}/scripts/handoff.sh" "$@"
+        ;;
+    memory)
+        exec python3 "${REPO_DIR}/scripts/memory-bridge.py" "$@"
+        ;;
+    test|self-test)
+        exec "${BIN_DIR}/sage-route" --self-test "$@"
+        ;;
+    help|--help|-h)
+        usage
+        ;;
+    *)
+        # If user typed `sage "some prompt"` directly, route it!
+        exec "${BIN_DIR}/sage-route" "${SUBCMD}" "$@"
+        ;;
+esac

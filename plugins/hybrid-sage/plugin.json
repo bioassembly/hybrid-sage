@@ -1,0 +1,7 @@
+{
+  "name": "hybrid-sage",
+  "version": "1.0.0",
+  "description": "Elastic Multi-Model Fleet Router & Local Execution Bridge for OpenCode and Antigravity",
+  "author": "bioassembly",
+  "license": "MIT"
+}

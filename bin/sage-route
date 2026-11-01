@@ -1,0 +1,548 @@
+#!/usr/bin/env python3
+"""
+sage-route: Health-Aware, File-Inspecting Dynamic Fleet Router & Dispatcher for Hybrid SAGE.
+
+Upgrades:
+  1. Live Endpoint & FIFO Slot Probing (<200ms check on /health and /slots).
+  2. Automatic Context & File Privacy Inspection (auto-detects file paths in prompt/-f/stdin,
+     calculates token count from bytes, and scans for .vcf/.bam/.fastq/.fq/.env/NIK/secrets).
+  3. Negation & Mock-Data Awareness (ignores negated phrases like 'no web search' or 'mock patient').
+  4. Precedence-Driven Scoring + Strict Airgap Guarantee (never fails over private data to cloud!).
+  5. Direct Execution Mode (-x / --exec) via `sage-local` (with endpoint/model forwarding) or `opencode run`.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import shlex
+import shutil
+import subprocess
+import sys
+import urllib.request
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
+from typing import Any
+
+
+@dataclass
+class RouteDecision:
+    unit_id: str
+    role: str
+    model: str
+    model_id: str
+    harness: str
+    endpoint: str
+    locality: str
+    endpoint_online: bool
+    slot_busy: bool
+    estimated_tokens: int
+    confidence: str
+    active_fleet_size: int
+    reasons: list[str] = field(default_factory=list)
+    recommended_command: str = ""
+    handoff_advice: str = ""
+
+
+NEGATION_PATTERNS = [
+    r"\b(?:no|not|without|don'?t|do\s+not|never|skip|avoid)\s+(?:any\s+)?(?:web\s+search\w*|google|brows\w*|online|internet|cloud|clinical|phi|patient|security\s+audit|architect\w*)\b",
+]
+
+MOCK_INDICATORS = re.compile(
+    r"\b(mock\w*|synthetic|dummy|fake|fixture\w*|sample[_\s-]?test|toy|simulated|de-?identified|anonymized)\b",
+    re.IGNORECASE,
+)
+
+PRIVACY_PROMPT_PATTERNS = [
+    (r"\b(phi|patient\w*|clinical|hospital|lims|nik|rekam\s*medis|mrn|embargo\w*|confidential|secret\w*|credential\w*|api[_\s-]?key|\.env)\b",
+     "Prompt references clinical, patient, LIMS, or credential data — restricted to privacy-cleared local unit."),
+    (r"\b(un-?anonymized|private\s+dataset|restricted\s+cohort)\b",
+     "Explicitly marked private/unanonymized data — forced to local hardware."),
+]
+
+SENSITIVE_EXTENSIONS = {
+    ".vcf", ".bam", ".cram", ".sam", ".bcf", ".ped", ".fastq", ".fq", ".env", ".pem", ".key", ".p12"
+}
+SENSITIVE_COMPOUND_EXTS = (".vcf.gz", ".fastq.gz", ".fq.gz")
+
+SENSITIVE_FILE_CONTENT_RE = re.compile(
+    r"(\b\d{16}\b|BEGIN\s+(?:RSA\s+|OPENSSH\s+)?PRIVATE\s+KEY|rekam[_\s-]?medis|patient[_\s-]?name|nama[_\s-]?pasien)",
+    re.IGNORECASE,
+)
+
+TAG_PATTERNS: dict[str, list[tuple[str, str]]] = {
+    "loop": [
+        (r"\b(boilerplate|unit\s+test\w*|pytest|nf-test|stub-run|docstring\w*|type\s+hint\w*|format\w*|lint\w*)\b",
+         "High-volume code generation, unit testing, or linting loop suits zero-marginal-cost local workhorse."),
+        (r"\b(batch|loop|overnight|cron|scrape|crawl|ocr|parse\s+logs|regex|sed|awk|bash\s+script)\b",
+         "Repetitive/high-throughput automation or batch parsing suits local ~47 tok/s execution."),
+    ],
+    "vision": [
+        (r"\b(image|plot|figure|gel\s+electrophoresis|screenshot|chromatogram|pdf\s+scan)\b",
+         "Visual inspection task; private images stay on-premise when a multimodal OpenCode worker is configured."),
+    ],
+    "web": [
+        (r"\b(web\s+search|google|latest\s+docs|release\s+notes|citation\w*|pubmed|doi|url|browse\w*)\b",
+         "Requires live web search, external documentation synthesis, or browser grounding."),
+    ],
+    "interactive": [
+        (r"\b(subagent\w*|parallel\s+agent\w*|serena|lsp\s+refactor|rename\s+symbol\s+across)\b",
+         "Multi-agent orchestration and fast interactive IDE/LSP refactoring."),
+        (r"\b(pr\s+review|code\s+review|diff\s+audit|quarto\s+report|readme|documentation)\b",
+         "Fast interactive synthesis, multi-file code review, or documentation polishing."),
+    ],
+    "architecture": [
+        (r"\b(architect\w*|system\s+design|red-?team\w*|skeptic|security\s+audit|owasp|threat\s+model\w*)\b",
+         "High-stakes system architecture, adversarial red-teaming, or security auditing."),
+        (r"\b(race\s+condition|deadlock|heisenbug|memory\s+leak|root\s+cause|complex\s+bug|subtle\s+bug|2-?strike)\b",
+         "Deep multi-file root-cause debugging benefits from maximum frontier reasoning."),
+        (r"\b(novel\s+algorithm|mathematical\s+proof|formal\s+verification|statistical\s+bias|phylo\w+\s+model|de\s+novo)\b",
+         "First-principles algorithmic or mathematical design warrants highest-reasoning unit."),
+        (r"\b(plan\s+migration|refactor\s+entire|cross-?repo\s+architecture|design\s+spec)\b",
+         "Broad architectural planning before delegating implementation."),
+    ],
+}
+
+
+def load_fleet(fleet_path: str | None = None) -> dict[str, Any]:
+    if fleet_path is None:
+        env_path = os.environ.get("HYBRID_SAGE_FLEET")
+        if env_path:
+            fleet_path = env_path
+        else:
+            repo_root = Path(__file__).resolve().parent.parent
+            fleet_path = str(repo_root / "configs" / "fleet.json")
+    with open(fleet_path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def probe_unit_health(unit: dict[str, Any], timeout: float = 0.25) -> tuple[bool, bool, int]:
+    """Return (online, slot_busy, live_max_context) via OpenCode CLI runtime."""
+    max_ctx = int(unit.get("max_context", 262144))
+    if unit.get("locality") == "cloud":
+        return True, False, max_ctx
+
+    repo_root = Path(__file__).resolve().parent.parent
+    if str(repo_root / "plugins") not in sys.path:
+        sys.path.insert(0, str(repo_root / "plugins"))
+    import mcp_core  # noqa: E402
+
+    rt = mcp_core.get_opencode_runtime(timeout=timeout)
+    if rt.get("max_context"):
+        max_ctx = int(rt["max_context"])
+    return bool(rt.get("online")), bool(rt.get("slot_0_busy")), max_ctx
+
+
+def strip_negated_clauses(text: str) -> str:
+    cleaned = text
+    for pat in NEGATION_PATTERNS:
+        cleaned = re.sub(pat, " ", cleaned, flags=re.IGNORECASE)
+    return cleaned
+
+
+def discover_and_inspect_files(
+    prompt: str, explicit_files: list[str], stdin_text: str
+) -> tuple[int, list[str]]:
+    """Estimate tokens from referenced files/stdin and scan for sensitive genomic/secret signatures."""
+    candidates: list[Path] = [Path(f) for f in explicit_files]
+
+    for token in re.findall(
+        r"(?:[\w./~-]+/[\w./-]+|\b[\w-]+\.(?:py|nf|sh|R|qmd|md|json|yaml|yml|vcf|bam|cram|fastq|fq|csv|tsv|env|pem|key)(?:\.gz)?\b)",
+        prompt,
+    ):
+        p = Path(token).expanduser()
+        if p.exists() and p not in candidates:
+            candidates.append(p)
+
+    total_bytes = len(prompt.encode("utf-8")) + len(stdin_text.encode("utf-8"))
+    privacy_hits: list[str] = []
+
+    for p in candidates:
+        if not p.exists():
+            continue
+        name_lower = p.name.lower()
+        if p.suffix.lower() in SENSITIVE_EXTENSIONS or name_lower.endswith(SENSITIVE_COMPOUND_EXTS):
+            privacy_hits.append(
+                f"File `{p.name}` has sensitive genomic/credential extension ({p.suffix}) — locked to local hardware."
+            )
+        if p.is_file():
+            try:
+                sz = p.stat().st_size
+                total_bytes += min(sz, 10_000_000)
+                with open(p, "rb") as f:
+                    head_text = f.read(16384).decode("utf-8", errors="ignore")
+                if SENSITIVE_FILE_CONTENT_RE.search(head_text):
+                    privacy_hits.append(
+                        f"File `{p.name}` contains clinical identifier / NIK / private key pattern — locked to local hardware."
+                    )
+            except Exception:
+                pass
+
+    return total_bytes // 4, privacy_hits
+
+
+def format_cmd_template(template: str, prompt: str) -> str:
+    quoted = shlex.quote(prompt) if prompt else "''"
+    return template.format(prompt=quoted)
+
+
+def classify_task(
+    prompt: str,
+    fleet_cfg: dict[str, Any],
+    private: bool = False,
+    offline: bool = False,
+    mock: bool = False,
+    context_tokens: int = 0,
+    explicit_files: list[str] | None = None,
+    stdin_text: str = "",
+) -> RouteDecision:
+    units = [u for u in fleet_cfg.get("units", []) if u.get("enabled", True)]
+    if not units:
+        raise ValueError("No enabled model units found in fleet configuration.")
+
+    unit_health: dict[str, tuple[bool, bool, int]] = {}
+    for u in units:
+        unit_health[u["id"]] = probe_unit_health(u)
+
+    auto_tokens, file_privacy_hits = discover_and_inspect_files(
+        prompt, explicit_files or [], stdin_text
+    )
+    est_tokens = max(context_tokens, auto_tokens)
+
+    raw_lower = prompt.lower()
+    is_mock = mock or bool(MOCK_INDICATORS.search(raw_lower))
+    cleaned_text = strip_negated_clauses(raw_lower)
+
+    privacy_reasons: list[str] = []
+    if private or offline or re.search(r"\b(offline|local\s+only|air-?gapped|zero\s+quota)\b", raw_lower):
+        privacy_reasons.append("Hard flag (--private / --offline) enforced: routing strictly to local privacy-cleared unit.")
+
+    if not is_mock:
+        privacy_reasons.extend(file_privacy_hits)
+        for pattern, msg in PRIVACY_PROMPT_PATTERNS:
+            if re.search(pattern, cleaned_text):
+                privacy_reasons.append(f"[PRIVACY GATE] {msg}")
+
+    # 1. Hard Privacy Gate (NEVER fail over to cloud, even if no local unit is enabled!)
+    if privacy_reasons:
+        local_units = [u for u in units if u.get("privacy_cleared") or u.get("locality") == "local"]
+        if not local_units:
+            privacy_reasons.append(
+                "CRITICAL BLOCK: No local/privacy-cleared unit is enabled in fleet.json! Refusing to route sensitive data to cloud."
+            )
+            return RouteDecision(
+                unit_id="BLOCKED-NO-LOCAL-UNIT",
+                role="Privacy Airgap Block (Enable a local unit in configs/fleet.json)",
+                model="NONE (Blocked for PHI/Credential Protection)",
+                model_id="none",
+                harness="NONE",
+                endpoint="BLOCKED",
+                locality="local",
+                endpoint_online=False,
+                slot_busy=False,
+                estimated_tokens=est_tokens,
+                confidence="HIGH (Hard Privacy Block)",
+                active_fleet_size=len(units),
+                reasons=privacy_reasons,
+                recommended_command="# Enable 'local-workhorse' in configs/fleet.json before running sensitive tasks",
+                handoff_advice="Never send unanonymized clinical data or credentials to non-local units.",
+            )
+
+        online_local = [u for u in local_units if unit_health[u["id"]][0]]
+        chosen = online_local[0] if online_local else local_units[0]
+        online, busy, _ = unit_health[chosen["id"]]
+        if not online:
+            privacy_reasons.append(
+                "WARNING: Local privacy unit is currently OFFLINE. Refusing cloud failover to protect sensitive data!"
+            )
+        return RouteDecision(
+            unit_id=chosen["id"],
+            role=chosen["role"],
+            model=chosen["model"],
+            model_id=chosen.get("model_id", "qwen3.8-flash-next-iq3_s"),
+            harness=chosen["harness"],
+            endpoint=chosen["endpoint"],
+            locality=chosen.get("locality", "local"),
+            endpoint_online=online,
+            slot_busy=busy,
+            estimated_tokens=est_tokens,
+            confidence="HIGH (Hard Privacy/Offline Gate)",
+            active_fleet_size=len(units),
+            reasons=privacy_reasons,
+            recommended_command=format_cmd_template(chosen.get("command_template", "{prompt}"), prompt),
+            handoff_advice="Keep all raw inputs on this local unit. Sanitize identifiers into NOTES.md if escalating later.",
+        )
+
+    online_units = [u for u in units if unit_health[u["id"]][0]]
+    candidate_units = online_units if online_units else units
+
+    scores: dict[str, int] = {u["id"]: 0 for u in candidate_units}
+    unit_reasons: dict[str, list[str]] = {u["id"]: [] for u in candidate_units}
+
+    offline_local_ids = [u["id"] for u in units if not unit_health[u["id"]][0]]
+
+    # 2. Context Window Scaling
+    local_resident_kv = max(
+        [int(u.get("resident_kv") or 131072) for u in candidate_units if u.get("locality") == "local"],
+        default=131072,
+    )
+    if est_tokens > 0:
+        for u in candidate_units:
+            _, _, max_ctx = unit_health[u["id"]]
+            if est_tokens > int(max_ctx * 0.85):
+                scores[u["id"]] -= 10
+            elif est_tokens > local_resident_kv and u.get("locality") == "cloud" and max_ctx >= 200_000:
+                scores[u["id"]] += 5
+                unit_reasons[u["id"]].append(
+                    f"Context size (~{est_tokens:,} tokens) exceeds resident local KV window; routed to {max_ctx:,}-token unit."
+                )
+
+    # 3. Precedence-Driven Tag Matching
+    matched_tags: set[str] = set()
+    for tag, patterns in TAG_PATTERNS.items():
+        for pattern, msg in patterns:
+            if re.search(pattern, cleaned_text):
+                matched_tags.add(tag)
+                weight = 4 if tag == "architecture" else 2
+                for u in candidate_units:
+                    if tag in u.get("tags", []):
+                        scores[u["id"]] += weight
+                        if msg not in unit_reasons[u["id"]]:
+                            unit_reasons[u["id"]].append(msg)
+
+    if "architecture" in matched_tags and "loop" in matched_tags:
+        for u in candidate_units:
+            if "architecture" in u.get("tags", []):
+                scores[u["id"]] += 2
+                unit_reasons[u["id"]].append(
+                    "Compound task (architecture + tests): precedence routes design to Architect first, then handoff tests to Workhorse."
+                )
+
+    for u in candidate_units:
+        _, busy, _ = unit_health[u["id"]]
+        if busy and u.get("locality") == "local" and "loop" not in matched_tags:
+            scores[u["id"]] -= 1
+
+    best_unit = max(
+        candidate_units,
+        key=lambda u: (scores[u["id"]], -u.get("cost_weight", 1)),
+    )
+
+    if scores[best_unit["id"]] <= 0:
+        default_id = fleet_cfg.get("default_unit")
+        default_matches = [u for u in candidate_units if u["id"] == default_id]
+        best_unit = default_matches[0] if default_matches else min(candidate_units, key=lambda u: u.get("cost_weight", 1))
+        unit_reasons[best_unit["id"]].append(
+            "Routine coding, file manipulation, or shell task — routed to zero-quota local workhorse."
+        )
+        confidence = "DEFAULT (Local-First Workhorse Policy)"
+    else:
+        confidence = "HIGH" if scores[best_unit["id"]] >= 2 else "MEDIUM"
+
+    if offline_local_ids and best_unit["id"] not in offline_local_ids:
+        unit_reasons[best_unit["id"]].append(
+            f"Note: Offline unit(s) {offline_local_ids} automatically bypassed via live health check."
+        )
+
+    online, busy, _ = unit_health[best_unit["id"]]
+
+    if best_unit.get("cost_weight", 0) >= 3:
+        advice = "Design spec / red-team here, then run `sage handoff plan` and `sage handoff exec` so Qwen 3.8 Flash Next writes the code & tests for $0."
+    elif best_unit.get("locality") == "cloud":
+        advice = "Use for fast interactive multi-file edits and web search. Offload unit test & boilerplate loops via `sage local`."
+    else:
+        advice = "Execute locally at ~47 tok/s ($0 quota). Escalate after 2 failed debugging attempts (`sage handoff review`)."
+
+    return RouteDecision(
+        unit_id=best_unit["id"],
+        role=best_unit["role"],
+        model=best_unit["model"],
+        model_id=best_unit.get("model_id", "qwen3.8-flash-next-iq3_s"),
+        harness=best_unit["harness"],
+        endpoint=best_unit["endpoint"],
+        locality=best_unit.get("locality", "unknown"),
+        endpoint_online=online,
+        slot_busy=busy,
+        estimated_tokens=est_tokens,
+        confidence=confidence,
+        active_fleet_size=len(units),
+        reasons=unit_reasons[best_unit["id"]],
+        recommended_command=format_cmd_template(best_unit.get("command_template", "{prompt}"), prompt),
+        handoff_advice=advice,
+    )
+
+
+def execute_decision(decision: RouteDecision, prompt: str, files: list[str], agent_mode: bool) -> int:
+    repo_bin = Path(__file__).resolve().parent
+    sage_local = str(repo_bin / "sage-local")
+    if decision.locality == "local":
+        if not decision.endpoint_online:
+            print(f"[sage-route] Error: {decision.unit_id} ({decision.endpoint}) is offline or blocked.", file=sys.stderr)
+            return 1
+        cmd = [sage_local]
+        if decision.model_id and decision.model_id != "opencode-default":
+            cmd.extend(["--model-id", decision.model_id])
+        for f in files:
+            cmd.extend(["-f", f])
+        cmd.append(prompt)
+        return subprocess.call(cmd)
+    else:
+        print(
+            f"\033[36m[sage-route] Task routed to Cloud Unit '{decision.unit_id}' ({decision.model}).\033[0m\n"
+            f"Recommended action in Antigravity: {decision.recommended_command}",
+            file=sys.stderr,
+        )
+        return 0
+
+
+def run_self_test(fleet_cfg: dict[str, Any]) -> int:
+    print("Running Hybrid SAGE Integration & Routing Verification Suite...")
+
+    for binary in ("opencode", "agy"):
+        path = shutil.which(binary)
+        if not path:
+            print(f"[FAIL] Required binary '{binary}' not found in PATH", file=sys.stderr)
+            return 1
+        print(f"[PASS] Binary check         <- {binary} found at {path}")
+
+    local_unit = next((u for u in fleet_cfg["units"] if u["id"] == "local-workhorse"), None)
+    if local_unit:
+        online, busy, max_ctx = probe_unit_health(local_unit)
+        if not online:
+            print("[INFO] OpenCode worker offline (cloud-only fallback mode verified)")
+        else:
+            print(f"[PASS] OpenCode worker      <- ONLINE (max_ctx={max_ctx:,}, slot_busy={busy})")
+
+    cases = [
+        ("Parse patient clinical LIMS CSV and anonymize NIK identifiers", False, False, 0, "local-workhorse"),
+        ("Write pytest unit tests with mock patient data and no web search", False, False, 0, "local-workhorse"),
+        ("Search latest Nextflow release notes on the web and update docs", False, False, 0, "cloud-sprinter"),
+        ("Architect a lock-free concurrent scheduler and red-team for race conditions", False, False, 0, "frontier-architect"),
+        ("Architect a new module and write unit tests for it", False, False, 0, "frontier-architect"),
+        ("Summarize a 200k token multi-repository codebase", False, False, 200_000, "cloud-sprinter"),
+    ]
+    for prompt, priv, off, ctx, expected_id in cases:
+        res = classify_task(prompt, fleet_cfg, private=priv, offline=off, context_tokens=ctx)
+        if res.unit_id != expected_id:
+            print(f"[FAIL] '{prompt}' -> got {res.unit_id}, expected {expected_id}", file=sys.stderr)
+            return 1
+        print(f"[PASS] {res.unit_id:<20} <- {prompt}")
+
+    # Test N-unit fleet elasticity (2-unit mode)
+    two_unit_cfg = {
+        **fleet_cfg,
+        "units": [u for u in fleet_cfg["units"] if u.get("enabled", True) and u["id"] != "cloud-sprinter"],
+    }
+    res_2u = classify_task("Architect a lock-free concurrent scheduler and red-team", two_unit_cfg)
+    if res_2u.unit_id != "frontier-architect" or res_2u.active_fleet_size != 2:
+        print("[FAIL] 2-unit fleet elasticity test failed", file=sys.stderr)
+        return 1
+    print(f"[PASS] 2-unit fleet mode    <- dynamically routed with {res_2u.active_fleet_size} active units")
+
+    # Test Hard Privacy Airgap when NO local unit is enabled (must NEVER leak to cloud!)
+    cloud_only_cfg = {
+        **fleet_cfg,
+        "units": [u for u in fleet_cfg["units"] if u.get("locality") == "cloud"],
+    }
+    res_block = classify_task("Parse patient clinical LIMS CSV", cloud_only_cfg)
+    if res_block.unit_id != "BLOCKED-NO-LOCAL-UNIT" or res_block.endpoint_online:
+        print("[FAIL] Hard privacy airgap failed to block cloud fallback when no local unit exists", file=sys.stderr)
+        return 1
+    print("[PASS] Privacy airgap lock  <- blocked cloud fallback when no local unit is enabled")
+
+    print("All 10 integration, privacy-airgap, negation, and fleet-elasticity assertions passed.")
+    return 0
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="Hybrid SAGE Router: Health-aware, file-inspecting task router and dispatcher."
+    )
+    parser.add_argument("prompt", nargs="*", help="Task description or prompt to classify")
+    parser.add_argument("-f", "--file", action="append", default=[], help="File(s) to inspect for token size & sensitivity")
+    parser.add_argument("-x", "--exec", action="store_true", help="Immediately execute the task if routed to a local unit")
+    parser.add_argument("--agent", action="store_true", help="When used with --exec, run via `opencode run` agent loop")
+    parser.add_argument("--fleet", type=str, default=None, help="Path to custom fleet.json config")
+    parser.add_argument("--list-units", action="store_true", help="List all configured units in fleet.json with live health")
+    parser.add_argument("--private", action="store_true", help="Task involves PHI, LIMS, or sensitive data")
+    parser.add_argument("--offline", action="store_true", help="Force offline / local-only routing")
+    parser.add_argument("--mock", action="store_true", help="Data is synthetic/mock (do not trigger clinical privacy lock)")
+    parser.add_argument("--context-tokens", type=int, default=0, help="Override estimated context size in tokens")
+    parser.add_argument("--json", action="store_true", help="Emit JSON output")
+    parser.add_argument("--self-test", action="store_true", help="Run integration & routing verification suite")
+
+    args = parser.parse_args()
+    fleet_cfg = load_fleet(args.fleet)
+
+    if args.list_units:
+        for u in fleet_cfg.get("units", []):
+            enabled = u.get("enabled", True)
+            online, busy, max_ctx = probe_unit_health(u) if enabled else (False, False, u.get("max_context", 0))
+            state = "ENABLED " if enabled else "DISABLED"
+            health_str = "ONLINE" if online else ("OFFLINE" if enabled else "STANDBY")
+            slot_str = " [BUSY]" if busy else ""
+            print(
+                f"• [{state} | {health_str:<7}{slot_str}] {u['id']:<18} ({u['locality'].upper():<5}) "
+                f"-> {u['model']} (ctx={max_ctx:,})"
+            )
+        return 0
+
+    if args.self_test:
+        return run_self_test(fleet_cfg)
+
+    stdin_text = ""
+    if not sys.stdin.isatty():
+        stdin_text = sys.stdin.read()
+
+    prompt_str = " ".join(args.prompt).strip()
+    if not prompt_str and not stdin_text:
+        parser.print_help()
+        return 1
+
+    decision = classify_task(
+        prompt_str,
+        fleet_cfg,
+        private=args.private,
+        offline=args.offline,
+        mock=args.mock,
+        context_tokens=args.context_tokens,
+        explicit_files=args.file,
+        stdin_text=stdin_text,
+    )
+
+    if args.json:
+        print(json.dumps(asdict(decision), indent=2))
+        return 0 if decision.unit_id != "BLOCKED-NO-LOCAL-UNIT" else 1
+
+    health_badge = "ONLINE" if decision.endpoint_online else "OFFLINE"
+    if decision.slot_busy:
+        health_badge += " (SLOT BUSY)"
+
+    print("======================================================================")
+    print(f"🎯 RECOMMENDED UNIT : {decision.unit_id} ({decision.role})")
+    print("======================================================================")
+    print(f"• Model             : {decision.model}")
+    print(f"• Harness           : {decision.harness}")
+    print(f"• Endpoint & Health : {decision.endpoint} [{decision.locality.upper()} — {health_badge}]")
+    print(f"• Est. Context      : ~{decision.estimated_tokens:,} tokens | Active Fleet: {decision.active_fleet_size} unit(s)")
+    print(f"• Confidence        : {decision.confidence}")
+    print("\n📌 Why:")
+    for r in decision.reasons:
+        print(f"  - {r}")
+    print(f"\n🚀 Action           : {decision.recommended_command}")
+    print(f"🔄 Handoff Protocol : {decision.handoff_advice}")
+    print("======================================================================")
+
+    if decision.unit_id == "BLOCKED-NO-LOCAL-UNIT":
+        return 1
+
+    if args.exec:
+        return execute_decision(decision, prompt_str, args.file, args.agent)
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

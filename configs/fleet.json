@@ -1,0 +1,59 @@
+{
+  "$schema": "https://bioassembly.github.io/hybrid-sage/fleet.schema.json",
+  "description": "Declarative model fleet topology for Hybrid SAGE. Local execution delegates through OpenCode CLI (`opencode`); cloud escalation delegates through Antigravity CLI (`agy --mode plan`).",
+  "default_unit": "local-workhorse",
+  "shared_bridges": {
+    "memory_file": "~/.config/opencode/memory.json",
+    "lessons_file": "~/.config/opencode/lessons.jsonl",
+    "stats_file": "~/.config/opencode/hybrid-sage-stats.jsonl",
+    "handoff_file": "NOTES.md"
+  },
+  "units": [
+    {
+      "id": "local-workhorse",
+      "role": "Workhorse (Privacy, High-Volume Loops, TDD, Boilerplate & Local Review)",
+      "model": "OpenCode Active Local Model (e.g. Qwen 3.8 Flash Next)",
+      "model_id": "opencode-default",
+      "harness": "OpenCode CLI (`opencode`) / Native MCP (`delegate_local`)",
+      "endpoint": "opencode://cli",
+      "locality": "local",
+      "privacy_cleared": true,
+      "max_context": 262144,
+      "resident_kv": 131072,
+      "cost_weight": 0,
+      "enabled": true,
+      "tags": ["privacy", "loop", "tdd", "boilerplate", "batch", "vision", "default"],
+      "command_template": "delegate_local(prompt={prompt})"
+    },
+    {
+      "id": "cloud-sprinter",
+      "role": "Sprinter (Interactive Multi-File, Live Web Search, Subagents & Fast Triage)",
+      "model": "Gemini 3.8 Flash (Antigravity Cloud)",
+      "model_id": "gemini-3.8-flash-medium",
+      "harness": "Antigravity CLI (`agy --mode plan`)",
+      "endpoint": "agy://cloud-sprinter",
+      "locality": "cloud",
+      "privacy_cleared": false,
+      "max_context": 1000000,
+      "cost_weight": 1,
+      "enabled": true,
+      "tags": ["web", "subagents", "interactive", "review", "long-context"],
+      "command_template": "escalate_task(prompt={prompt}, target_model='gemini-3.8-flash-medium')"
+    },
+    {
+      "id": "frontier-architect",
+      "role": "Architect (System Design, Adversarial Red-Team, Security Audit & 2-Strike Escalation)",
+      "model": "Gemini 4 Argon (Antigravity Frontier)",
+      "model_id": "gemini-4-argon-medium",
+      "harness": "Antigravity CLI (`agy --mode plan`)",
+      "endpoint": "agy://frontier-architect",
+      "locality": "cloud",
+      "privacy_cleared": false,
+      "max_context": 1000000,
+      "cost_weight": 3,
+      "enabled": true,
+      "tags": ["architecture", "red-team", "security", "deep-debug", "long-context"],
+      "command_template": "escalate_task(prompt={prompt}, target_model='gemini-4-argon-medium')"
+    }
+  ]
+}

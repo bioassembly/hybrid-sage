@@ -1,0 +1,86 @@
+#!/usr/bin/env python3
+"""
+sage-local: CLI Bridge to Local OpenCode Harness (`mcp_core.handle_delegate_local`).
+
+Delegates code generation, unit test scaffolding, docstrings, or read-only reviews
+through OpenCode (`opencode run --agent reviewer|build|plan --format json --auto`)
+using OpenCode's configured provider with $0 cloud quota.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO_ROOT / "plugins"))
+import mcp_core  # noqa: E402
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="Delegate a local task through the OpenCode harness."
+    )
+    parser.add_argument("prompt", nargs="*", help="Task prompt for local OpenCode execution")
+    parser.add_argument(
+        "-m",
+        "--mode",
+        default="default",
+        choices=["default", "code", "test", "review", "docstring", "explain", "plan", "redact"],
+        help="Execution mode (maps to OpenCode reviewer/build/plan agent)",
+    )
+    parser.add_argument("-f", "--file", action="append", default=[], help="Target file(s) for context")
+    parser.add_argument("-o", "--output", default=None, help="Write generated output directly to this file path")
+    parser.add_argument("--verify", default=None, help="Verification command to run after writing --output")
+    parser.add_argument("--skip-if-busy", action="store_true", help="Skip immediately if local slot 0 is busy")
+    parser.add_argument("--async-job", action="store_true", help="Launch asynchronously and print job_id")
+    parser.add_argument("--poll", default=None, help="Poll status/output of an async job_id")
+    parser.add_argument("--model-id", default=None, help="Optional OpenCode model override")
+    parser.add_argument("--workdir", default=None, help="Working directory for OpenCode execution")
+    parser.add_argument("--json", action="store_true", help="Print full JSON result")
+    # Accept legacy flags as no-ops so existing scripts never break
+    parser.add_argument("--agent", action="store_true", help=argparse.SUPPRESS)
+
+    args = parser.parse_args()
+
+    if args.poll:
+        res = mcp_core.handle_delegate_local({"job_id": args.poll})
+        print(json.dumps(res, indent=2) if args.json else res.get("response") or json.dumps(res, indent=2))
+        return 0 if res.get("status") in ("ok", "completed", "running") else 1
+
+    prompt_str = " ".join(args.prompt).strip()
+    if not prompt_str and not sys.stdin.isatty():
+        prompt_str = sys.stdin.read().strip()
+    if not prompt_str:
+        parser.print_help()
+        return 1
+
+    payload = {
+        "prompt": prompt_str,
+        "files": args.file,
+        "mode": args.mode,
+        "output_path": args.output,
+        "verify_command": args.verify,
+        "skip_if_busy": args.skip_if_busy,
+        "async_mode": args.async_job,
+    }
+    if args.model_id and args.model_id != "opencode-default":
+        payload["model_id"] = args.model_id
+    if args.workdir:
+        payload["workdir"] = args.workdir
+
+    res = mcp_core.handle_delegate_local(payload)
+    if args.json:
+        print(json.dumps(res, indent=2))
+    elif res.get("status") in ("ok", "async_started"):
+        print(res.get("response") or res.get("message", ""))
+    else:
+        sys.stderr.write(f"[sage-local] {res.get('error') or res.get('message') or res}\n")
+        return 2 if res.get("status") == "busy_skipped" else 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,36 @@
+# Secrets & Credentials
+.env
+.env.*
+*.key
+*.pem
+*secret*
+*credentials*
+command.sh
+opencode.json
+
+# Python / Virtualenvs
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# OS & Editor
+.DS_Store
+Thumbs.db
+*.swp
+*~
+.idea/
+.vscode/
+
+# Scratch / Logs / Generated Machine Paths
+*.log
+NOTES.md
+NOTES.md.bak
+backup-*/
+.sage-backups/
+.sage-outputs/
+.sage-reviews/
+configs/fleet.local.json
+*.local.json
+plugins/hybrid-sage/mcp_config.json
+.serena/
