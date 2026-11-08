@@ -18,14 +18,15 @@ def run(job_dir: Path) -> int:
         with (job_dir / "job.log").open("w", encoding="utf-8") as log:
             proc = subprocess.run(meta["command"], stdout=log, stderr=subprocess.STDOUT,
                                   cwd=meta["workdir"], timeout=meta["timeout_sec"],
-                                  env={**os.environ, "HYBRID_SAGE_CHILD": "opencode"})
+                                  env={**os.environ, "HYBRID_SAGE_CHILD": "opencode", "PWD": meta["workdir"]})
         result["returncode"] = proc.returncode
         if proc.returncode == 0 and meta.get("verify_command"):
             argv = shlex.split(meta["verify_command"])
             if not argv:
                 raise ValueError("Empty verify_command")
             check = subprocess.run(argv, cwd=meta["workdir"], capture_output=True,
-                                   text=True, timeout=120, shell=False)
+                                   text=True, timeout=120, shell=False,
+                                   env={**os.environ, "PWD": meta["workdir"]})
             result["verification"] = {"command": meta["verify_command"], "passed": check.returncode == 0,
                                       "output_tail": (check.stdout + check.stderr)[-1500:]}
     except (OSError, ValueError, KeyError, subprocess.TimeoutExpired) as exc:

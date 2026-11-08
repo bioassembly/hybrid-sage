@@ -77,6 +77,10 @@ The runtime matches the active provider exactly rather than probing an unrelated
 configured provider. Alternate worker selection does not depend on the default
 local inference endpoint being online.
 
+Worker launches align both the operating-system working directory and logical
+`PWD` with the assigned workspace, and include its absolute path in the task
+contract. This avoids native CLI sessions inheriting the frontier shell's directory.
+
 ## Install
 
 Requires Python 3.10+ and the CLIs for the harnesses you use. Codex consultation

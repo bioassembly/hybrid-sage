@@ -230,6 +230,33 @@ class ThreeHarnessTests(IsolatedStateMixin, unittest.TestCase):
             router.execute_decision(decision, "Implement my unpublished algorithm", [], False)
         self.assertIn("--require-local", call.call_args.args[0])
 
+    def test_worker_prompt_and_environment_use_assigned_workspace(self):
+        workspace = self.state_dir / "assigned"
+        workspace.mkdir()
+        (workspace / "input.py").write_text("x = 1\n")
+        with patch.object(mcp_core, "select_best_local_node", return_value={"online": True}), \
+             patch.object(mcp_core.shutil, "which", return_value="/opencode"), \
+             patch.object(mcp_core.subprocess, "run", return_value=Mock(returncode=0, stdout="done", stderr="")) as run:
+            result = mcp_core.handle_delegate_local({"prompt": "Implement", "files": ["input.py"], "workdir": str(workspace)})
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(run.call_args.kwargs["cwd"], str(workspace))
+        self.assertEqual(run.call_args.kwargs["env"]["PWD"], str(workspace))
+        prompt = next(arg for arg in run.call_args.args[0] if arg.startswith("Assigned workspace:"))
+        self.assertIn(str(workspace / "input.py"), prompt)
+
+    def test_async_supervisor_aligns_actual_cwd_and_logical_pwd(self):
+        runner = Path(__file__).resolve().parent.parent / "scripts/worker-runner.py"
+        workspace = self.state_dir / "assigned"
+        workspace.mkdir()
+        job = self.state_dir / "job-workspace"
+        job.mkdir()
+        code = "import json, os; from pathlib import Path; Path('proof.json').write_text(json.dumps({'cwd':os.getcwd(), 'pwd':os.environ['PWD']}))"
+        (job / "meta.json").write_text(json.dumps({"command": [sys.executable, "-c", code], "workdir": str(workspace), "timeout_sec": 10}))
+        subprocess.run([sys.executable, str(runner), str(job)], env={**os.environ, "PWD": "/wrong-parent-directory"}, check=True)
+        proof = json.loads((workspace / "proof.json").read_text())
+        self.assertEqual(proof, {"cwd": str(workspace), "pwd": str(workspace)})
+        self.assertFalse((self.state_dir / "proof.json").exists())
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -285,9 +285,14 @@ TOOLS.extend([
 ])
 
 
-def child_environment(harness: str) -> dict[str, str]:
+def child_environment(harness: str, workdir: Path | None = None) -> dict[str, str]:
     """Propagate a recursion guard to child CLIs and the MCP servers they start."""
-    return {**os.environ, "HYBRID_SAGE_CHILD": harness}
+    env = {**os.environ, "HYBRID_SAGE_CHILD": harness}
+    if workdir is not None:
+        # Native CLIs may choose their session location from the shell's logical
+        # PWD rather than getcwd(). Align both when launching another workspace.
+        env["PWD"] = str(workdir)
+    return env
 
 
 def delegation_blocked() -> dict[str, Any] | None:
@@ -417,7 +422,7 @@ def handle_consult_codex(args: dict[str, Any]) -> dict[str, Any]:
                 cmd.extend(["--model", str(args["model_id"])])
             started = time.monotonic()
             proc = subprocess.run(cmd, input=packet, cwd=scratch,
-                                  env=child_environment("codex"), capture_output=True,
+                                  env=child_environment("codex", Path(scratch)), capture_output=True,
                                   text=True, timeout=timeout)
             if proc.returncode:
                 return {"status": "error", "error": (proc.stderr or proc.stdout)[-1500:],
@@ -1235,6 +1240,10 @@ def handle_delegate_local(args: dict[str, Any]) -> dict[str, Any]:
     skip_if_busy = bool(args.get("skip_if_busy", False))
     async_mode = bool(args.get("async_mode") or args.get("async", False))
     workdir = Path(str(args.get("workdir") or os.getcwd())).resolve()
+    if not workdir.is_dir():
+        return {"status": "error", "error": "workdir must be an existing directory"}
+    files = [str(Path(f).expanduser().resolve()) if Path(f).expanduser().is_absolute()
+             else str((workdir / Path(f).expanduser()).resolve()) for f in files]
     require_local = bool(args.get("require_local", False))
     if async_mode and output_path:
         return {"status": "error", "error": "async_mode with output_path is unsupported; let the worker edit its scoped files directly or use synchronous output_path."}
@@ -1302,7 +1311,13 @@ def handle_delegate_local(args: dict[str, Any]) -> dict[str, Any]:
         agent_name = "build"
 
     # 4. Construct prompt with file pointers & contract (local model reads files itself via tools)
-    target_prompt = prompt
+    target_prompt = (
+        f"Assigned workspace: {workdir}\n"
+        "Resolve relative paths against this absolute workspace. Keep all task "
+        "writes within this workspace and the assigned file scope. If your tools "
+        "report a different project directory, use the supplied absolute paths; "
+        "do not write into that other directory.\n\n" + prompt
+    )
     if files:
         target_prompt += "\n\nTarget files:\n" + "\n".join(f"- {f}" for f in files)
     if mode == "review":
@@ -1364,7 +1379,7 @@ def handle_delegate_local(args: dict[str, Any]) -> dict[str, Any]:
             meta_file.chmod(0o600)
             proc = subprocess.Popen([sys.executable, str(REPO_ROOT / "scripts/worker-runner.py"), str(jdir)],
                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                                    cwd=str(workdir), env=child_environment("opencode"), start_new_session=True)
+                                    cwd=str(workdir), env=child_environment("opencode", workdir), start_new_session=True)
             meta["pid"] = proc.pid
             meta["status"] = "running"
             meta_file.write_text(json.dumps(meta, indent=2), encoding="utf-8")
@@ -1391,7 +1406,7 @@ def handle_delegate_local(args: dict[str, Any]) -> dict[str, Any]:
             stderr=subprocess.PIPE,
             text=True,
             cwd=str(workdir),
-            env=child_environment("opencode"),
+            env=child_environment("opencode", workdir),
             timeout=policy["timeout_sec"],
         )
         elapsed = round(time.monotonic() - t0, 2)
