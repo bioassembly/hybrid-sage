@@ -1,7 +1,7 @@
 {
   "name": "hybrid-sage",
-  "version": "1.0.0",
-  "description": "Elastic Multi-Model Fleet Router & Local Execution Bridge for OpenCode and Antigravity",
+  "version": "3.0.0",
+  "description": "Three-harness AI fleet router for Codex, Antigravity, and OpenCode with explicit model selection, context handoffs, and bounded cross-model consultation.",
   "author": "bioassembly",
   "license": "MIT"
 }

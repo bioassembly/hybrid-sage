@@ -4,15 +4,15 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hybrid-sage"
-version = "2.0.0"
-description = "Bidirectional MCP router & plugin bridging Google Antigravity and OpenCode with task routing, passive episodic lesson transfer, and a PII/PHI/Secret airgap firewall."
+version = "3.0.0"
+description = "Three-harness MCP router for Codex, Antigravity, and OpenCode with explicit model delegation and scoped context handoffs."
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}
 authors = [
   {name = "bioassembly"}
 ]
-keywords = ["mcp", "agent-router", "antigravity", "opencode", "hybrid-ai", "airgap-firewall", "bioinformatics"]
+keywords = ["mcp", "agent-router", "antigravity", "opencode", "codex", "hybrid-ai", "airgap-firewall", "bioinformatics"]
 dependencies = []
 
 [project.scripts]

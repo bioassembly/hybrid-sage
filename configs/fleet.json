@@ -1,7 +1,7 @@
 {
   "$schema": "https://bioassembly.github.io/hybrid-sage/fleet.schema.json",
-  "description": "Declarative model fleet topology for Hybrid SAGE. Local execution delegates through OpenCode CLI (`opencode`); cloud escalation delegates through Antigravity CLI (`agy --mode plan`).",
-  "default_unit": "local-workhorse",
+  "description": "Three-harness fleet: OpenCode model workers, Antigravity frontier consultation, and Codex independent review. Provider billing and locality must be checked; local CLI execution does not imply local inference.",
+  "default_unit": "free-workhorse",
   "shared_bridges": {
     "memory_file": "~/.config/opencode/memory.json",
     "lessons_file": "~/.config/opencode/lessons.jsonl",
@@ -22,8 +22,16 @@
       "resident_kv": 131072,
       "cost_weight": 0,
       "enabled": true,
-      "tags": ["privacy", "loop", "tdd", "boilerplate", "batch", "vision", "default"],
-      "command_template": "delegate_local(prompt={prompt})"
+      "tags": [
+        "privacy",
+        "loop",
+        "tdd",
+        "boilerplate",
+        "batch",
+        "vision",
+        "default"
+      ],
+      "command_template": "delegate_local(prompt={prompt}, require_local=True)"
     },
     {
       "id": "cloud-sprinter",
@@ -37,7 +45,13 @@
       "max_context": 1000000,
       "cost_weight": 1,
       "enabled": true,
-      "tags": ["web", "subagents", "interactive", "review", "long-context"],
+      "tags": [
+        "web",
+        "subagents",
+        "interactive",
+        "review",
+        "long-context"
+      ],
       "command_template": "escalate_task(prompt={prompt}, target_model='gemini-3.8-flash-medium')"
     },
     {
@@ -52,8 +66,66 @@
       "max_context": 1000000,
       "cost_weight": 3,
       "enabled": true,
-      "tags": ["architecture", "red-team", "security", "deep-debug", "long-context"],
+      "tags": [
+        "architecture",
+        "red-team",
+        "security",
+        "deep-debug",
+        "long-context"
+      ],
       "command_template": "escalate_task(prompt={prompt}, target_model='gemini-4-argon-medium')"
+    },
+    {
+      "id": "codex-specialist",
+      "role": "Independent code review and design diagnosis via Codex",
+      "model": "Codex default (or explicit model_id)",
+      "model_id": "codex-default",
+      "harness": "Codex CLI",
+      "endpoint": "codex://cli",
+      "locality": "cloud",
+      "privacy_cleared": false,
+      "max_context": 128000,
+      "cost_weight": 3,
+      "enabled": true,
+      "tags": [
+        "codex",
+        "architecture",
+        "review"
+      ],
+      "command_template": "consult_codex(prompt={prompt})"
+    },
+    {
+      "id": "free-workhorse",
+      "role": "Free-model implementation and test worker via OpenCode",
+      "model": "Operator-approved free OpenCode worker",
+      "model_id": "opencode/glm-5.3-flash-free",
+      "harness": "OpenCode CLI",
+      "endpoint": "opencode://free",
+      "locality": "cloud",
+      "privacy_cleared": false,
+      "max_context": 200000,
+      "cost_weight": 0,
+      "enabled": true,
+      "tags": [
+        "loop",
+        "boilerplate",
+        "batch",
+        "tdd",
+        "default"
+      ],
+      "command_template": "delegate_local(prompt={prompt}, free_only=True)"
     }
-  ]
+  ],
+  "worker_policy": {
+    "default_model": "opencode/glm-5.3-flash-free",
+    "free_model_ids": [
+      "opencode/glm-5.3-flash-free",
+      "opencode/mimo-v2.6-flash-free",
+      "opencode/nemotron-3.5-lightning-free",
+      "opencode/nemotron-3.5-super-vl-free",
+      "opencode/deepseek-v4.1-flash-free"
+    ],
+    "max_parallel_jobs": 3,
+    "timeout_sec": 900
+  }
 }

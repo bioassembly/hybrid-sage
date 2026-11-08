@@ -1,45 +1,37 @@
-# System Architecture: Hybrid SAGE (Elastic OpenCode + Antigravity Symbiosis)
+# Three-harness architecture
 
-## Overview
-
-`hybrid-sage` is a cross-harness orchestration and privacy-airgap plugin connecting **OpenCode** (serving any configured local or OpenAI-compatible provider, such as `llama-server`, Ollama, LM Studio, or vLLM) with **Antigravity** (`agy`, serving upstream frontier models such as Gemini 3.8 Flash and Gemini 4 Argon). If no local OpenCode worker is running, cloud sessions degrade gracefully to cloud-only execution.
-
-All active units are declared in [`configs/fleet.json`](../configs/fleet.json). You can scale your fleet down to **1–2 units** (cloud-only or 1 local + 1 cloud) or up to **N units** with zero code changes.
+Hybrid SAGE exposes eight stdio MCP tools to Codex, Antigravity, and OpenCode.
+Frontier sessions perform planning and final review; OpenCode workers execute
+bounded implementation and test loops with an operator-approved free model.
 
 ```mermaid
 flowchart TD
-    User["Developer / Bioinformatician"] --> Router["route_task / sage-route (configs/fleet.json)"]
-
-    Router -->|"Tag: privacy / loop / tdd / batch"| U1["Workhorse Unit (OpenCode CLI — Cost Weight 0)"]
-    Router -->|"Tag: web / interactive / subagents"| U2["Sprinter Unit (Gemini 3.8 Flash — Cost Weight 1)"]
-    Router -->|"Tag: architecture / red-team / security"| U3["Architect Unit (Gemini 4 Argon — Cost Weight 3)"]
-
-    subgraph LocalNode["Workhorse Harness (Optional Local Hardware)"]
-        U1 --> OC["opencode run --agent reviewer|build|plan --format json --auto"]
-    end
-
-    subgraph CloudNode["Frontier Harness (Antigravity CLI / IDE)"]
-        U2 --> AGY["agy (--mode plan for read-only escalations)"]
-        U3 --> AGY
-    end
-
-    OC <-->|"Shared Knowledge Graph"| Mem[("~/.config/opencode/memory.json")]
-    AGY <-->|"Shared Knowledge Graph"| Mem
-    OC <-->|"Episodic Lessons & Specs"| Notes[("lessons.jsonl & Workspace NOTES.md")]
-    AGY <-->|"Episodic Lessons & Specs"| Notes
+  C[Codex frontier] -->|delegate_local| W[OpenCode free workers]
+  A[Antigravity frontier] -->|delegate_local| W
+  W -->|artifacts and verification| C
+  W -->|artifacts and verification| A
+  O[OpenCode primary session] -->|consult_codex snapshot| C
+  O -->|escalate_task plan| A
+  A -->|consult_codex snapshot| C
+  C -->|escalate_task plan| A
 ```
 
-## Adapting `configs/fleet.json` to Your Topology
+`plugins/mcp_core.py` owns dispatch, provider discovery, policy, scanning, and
+handoffs. `plugins/mcp_server.py` exposes JSON-RPC and reloads core changes.
+`configs/fleet.json` declares routing units and free worker policy; optional
+`fleet.local.json` overrides machine-specific choices.
 
-### Scenario A: Cloud-Only (No Local Model Hardware)
-If you run Antigravity without a local inference server:
-- `fleet_status` reports `opencode_runtime.online: false`, and `delegate_local(skip_if_busy=True)` returns cleanly without blocking so all tasks execute directly on `cloud-sprinter` / `frontier-architect`.
+Async jobs run through `scripts/worker-runner.py`. A shared file lock caps active
+jobs, a supervisor records the actual exit status and optional verification, and
+polling reads persistent results even after the MCP server restarts. Workers own
+disjoint paths or worktrees. Failed jobs cannot silently fall back to paid models.
+`HYBRID_SAGE_CHILD` blocks recursive delegation across all child harnesses.
 
-### Scenario B: 2-Unit Topology (1 OpenCode Workhorse + 1 Upstream Cloud)
-1. Set `"enabled": false` on `cloud-sprinter` (or `frontier-architect`) in `configs/fleet.json`, and add `"web"`, `"interactive"` tags to your single active cloud unit.
-2. `route_task` routes private/loop work to `local-workhorse` and web/architecture/escalation work to your upstream unit.
+The OpenCode plugin uses v2 domain transforms for MCP, skills, commands, and
+context hooks. A v1 server adapter remains available. The installer registers the
+repository package directory rather than a single `.mjs` file.
 
-### Scenario C: 3-Unit Default Symbiosis (`local-workhorse` + `cloud-sprinter` + `frontier-architect`)
-- `local-workhorse` (`OpenCode`) handles routine coding, TDD loops, boilerplate, and cross-family diff reviews (`mode="review"`).
-- `cloud-sprinter` (`Gemini 3.8 Flash`) handles interactive multi-file implementation, web search, and parallel subagents.
-- `frontier-architect` (`Gemini 4 Argon`) handles greenfield architecture, `/red-team`, security audits, and 2-strike `escalate_task` diagnoses.
+Codex consultation uses scanned snapshots and disables project tools. OpenCode
+and Antigravity plan sessions may inspect their project with tools; regex scanning
+is defense in depth rather than a complete data-isolation boundary. Notes and
+lessons are project-scoped evidence to verify, not authoritative instructions.

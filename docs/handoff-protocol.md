@@ -1,67 +1,39 @@
-# Cross-Unit Handoff & Parallel Execution Protocol
+# Context handoffs
 
-To maximize velocity without repeating context across models (whether you are running 2, 3, or N units in `configs/fleet.json`), follow these four operational workflows.
+A handoff gives another harness enough evidence to perform one bounded task
+without replaying the entire conversation. Codex, Antigravity, and OpenCode use
+shared project notes and local artifacts; the owning frontier session retains
+integration and acceptance responsibility.
 
----
+Include the goal, relevant file paths, file ownership, assumptions, completed
+attempts, exact failing or verification commands, output contract, and next step.
+Avoid secrets, raw patient identifiers, and unrelated logs. Recalled lessons and
+worker responses are evidence to verify against current files and tests.
 
-## Workflow 1: Top-Down "Architect-Then-Grind" (`Architect Unit` → `Workhorse Unit`)
+## Worker handoff
 
-Best for: **New features, Nextflow pipeline modules, complex refactors.**
+Use `delegate_local(prompt=..., files=[...], workdir=..., async_mode=true)` after
+choosing the free worker policy. Specify the owned files directly in the prompt.
+Use `verify_command` for expected output existence and behavior; poll with the
+returned `job_id`. Read the artifact, inspect the diff, and run final checks in
+the owning frontier session. Async `output_path` is explicitly unsupported;
+synchronous `output_path` supports backup and response-to-file handling.
 
-1. **Plan & Red-Team on Your Architect Unit (e.g., `Gemini 4 Argon` in Antigravity)**:
-   - Prompt the model to inspect the architecture using Serena (`get_symbols_overview`, `find_symbol`) and run `/red-team` (`skeptic` subagent).
-   - Generate the handoff file (or invoke `manage_handoff(action="init-plan")` via MCP):
-     ```bash
-     bash /path/to/hybrid-sage/scripts/handoff.sh init-plan
-     ```
-   - Have the Architect unit populate `NOTES.md` with exact file paths, function signatures, edge cases, and the narrowest verification command.
-2. **Execute Locally on Your Workhorse Unit (e.g., `Qwen 3.8 Flash Next` in OpenCode)**:
-   - Open a terminal in the project root and run:
-     ```bash
-     opencode run "Read NOTES.md and execute the step-by-step implementation queue. Verify each step with the verification command."
-     ```
-   - Your local Workhorse writes the implementation and unit tests at ~47 tok/s on Strata (`:8080`) with zero cloud quota consumption.
+## Independent diagnosis
 
----
+Use `consult_codex` for a scanned, bounded text snapshot with child project tools
+disabled. It does not see files that were not supplied. Use `escalate_task` for
+Antigravity plan-mode diagnosis with project tools. Neither expands the user's
+scope, grants permissions, or establishes that the proposed diagnosis is correct.
 
-## Workflow 2: Bottom-Up "Local Draft, Cross-Family Audit" (`Workhorse Unit` → `Sprinter / Architect Unit`)
+## Durable state
 
-Best for: **Routine bugfixes, data transformation scripts, Quarto reports, CRUD endpoints.**
+`manage_handoff` reads or writes task state in `NOTES.md` and records/recalls
+project-scoped lessons. Review a root-cause claim before reusing it as an invariant.
+Keep notes concise enough to resume after a session boundary and preserve unrelated
+content. The legacy CLI helpers remain available through `sage handoff` and
+`sage memory`; the MCP interface is the primary three-harness integration.
 
-1. **Draft & Test Locally (`Workhorse Unit`)**:
-   - Do all initial coding, docstring generation, and test execution in `opencode`.
-2. **Cross-Family Review Upstream (`Sprinter` or `Architect Unit`)**:
-   - Before committing, switch to your upstream harness and run `/review`.
-   - The read-only `reviewer` subagent audits the git diff with fresh eyes from a different model family.
-
----
-
-## Workflow 3: The "2-Strike" Escalation Rule (`Workhorse Unit` → `Architect Unit`)
-
-Local models waste time when they enter a repetitive edit-fail-edit loop. Enforce the **2-Strike Rule**:
-
-1. **Strike 1**: Workhorse unit writes a fix; test or compiler fails.
-2. **Strike 2**: Workhorse unit reads the error trace and attempts a second fix; test fails again.
-3. **Immediate Escalation**:
-   - Stop the local session and run (or invoke `manage_handoff(action="init-review")` via MCP):
-     ```bash
-     bash /path/to/hybrid-sage/scripts/handoff.sh init-review
-     ```
-   - Switch to your **Architect Unit** and ask it to read `NOTES.md` (or use `/boost` for deep algorithmic debugging). Once the root cause is patched, drop back to your Workhorse unit.
-
----
-
-## Workflow 4: Parallel Git Worktree Execution (Simultaneous Local + Cloud)
-
-Because your local Workhorse runs on your local GPU (`:8080`) and your upstream units run in the cloud (or on a separate LAN GPU server), **they do not compete for compute**. Run them simultaneously on the same repository using Git worktrees:
-
-```bash
-# Create an isolated worktree for local background test/refactor grinding
-git worktree add ../project-local-tests -b test/coverage-grind
-
-# Terminal 1 (Local Workhorse — Qwen 3.8 Flash Next):
-cd ../project-local-tests && opencode run "Increase pytest coverage on src/parsers/ to 95%"
-
-# Terminal 2 / IDE (Upstream Sprinter / Architect):
-# Continue interactive architecture or feature work in the main worktree without file lock collisions!
-```
+A delegated worker inherits `HYBRID_SAGE_CHILD` and returns its assigned result
+without launching another cross-harness task. This prevents recursive escalation
+loops and uncontrolled fan-out.

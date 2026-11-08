@@ -38,6 +38,8 @@ def main() -> int:
     parser.add_argument("--async-job", action="store_true", help="Launch asynchronously and print job_id")
     parser.add_argument("--poll", default=None, help="Poll status/output of an async job_id")
     parser.add_argument("--model-id", default=None, help="Optional OpenCode model override")
+    parser.add_argument("--allow-paid", action="store_true", help="Explicitly permit a model outside the configured free-worker allowlist")
+    parser.add_argument("--require-local", action="store_true", help="Require the configured active provider to be verified local; never use a hosted free worker")
     parser.add_argument("--workdir", default=None, help="Working directory for OpenCode execution")
     parser.add_argument("--json", action="store_true", help="Print full JSON result")
     # Accept legacy flags as no-ops so existing scripts never break
@@ -65,6 +67,8 @@ def main() -> int:
         "verify_command": args.verify,
         "skip_if_busy": args.skip_if_busy,
         "async_mode": args.async_job,
+        "free_only": not args.allow_paid,
+        "require_local": args.require_local,
     }
     if args.model_id and args.model_id != "opencode-default":
         payload["model_id"] = args.model_id

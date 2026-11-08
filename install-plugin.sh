@@ -7,6 +7,10 @@ set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MCP_SERVER_SCRIPT="${REPO_DIR}/plugins/mcp_server.py"
+if [[ "${1:-}" == "--codex-only" ]]; then
+  shift
+  exec python3 "${REPO_DIR}/scripts/install-codex.py" "$@"
+fi
 chmod +x "${MCP_SERVER_SCRIPT}"
 
 # 1. Generate machine-local mcp_config.json inside plugins/hybrid-sage/
@@ -36,11 +40,12 @@ echo "✔ Linked Antigravity skill  : ${HOME}/.gemini/config/skills/model-router
 AGY_MCP_CONFIG="${HOME}/.gemini/config/mcp_config.json"
 if [[ -f "${AGY_MCP_CONFIG}" ]]; then
     python3 - "${AGY_MCP_CONFIG}" "${MCP_SERVER_SCRIPT}" <<'PYEOF'
-import json, sys
+import json, sys, shutil, time
 cfg_path, server_script = sys.argv[1], sys.argv[2]
 try:
     with open(cfg_path, "r", encoding="utf-8") as f:
         cfg = json.load(f)
+    shutil.copy2(cfg_path, f"{cfg_path}.pre-hybrid-sage-{time.time_ns()}")
     servers = cfg.setdefault("mcpServers", {})
     servers["hybrid-sage"] = {
         "command": "python3",
@@ -60,24 +65,36 @@ OC_PLUGINS_DIR="${HOME}/.config/opencode/plugins"
 OC_COMMAND_DIR="${HOME}/.config/opencode/command"
 mkdir -p "${OC_PLUGINS_DIR}" "${OC_COMMAND_DIR}" "${HOME}/.config/opencode/skills"
 
-ln -sfn "${REPO_DIR}/.opencode/plugins/hybrid-sage.mjs" "${OC_PLUGINS_DIR}/hybrid-sage.mjs"
+if [[ -L "${OC_PLUGINS_DIR}/hybrid-sage.mjs" ]]; then
+  rm "${OC_PLUGINS_DIR}/hybrid-sage.mjs"
+fi
+if [[ -d "${OC_PLUGINS_DIR}/hybrid-sage" && ! -L "${OC_PLUGINS_DIR}/hybrid-sage" ]]; then
+  echo "Refusing to replace unrelated plugin directory: ${OC_PLUGINS_DIR}/hybrid-sage" >&2
+  exit 1
+fi
+ln -sfn "${REPO_DIR}" "${OC_PLUGINS_DIR}/hybrid-sage"
 ln -sfn "${REPO_DIR}/skills/model-router" "${HOME}/.config/opencode/skills/model-router"
 rm -f "${OC_COMMAND_DIR}/local.md"
 cp -p "${REPO_DIR}/.opencode/command/"*.md "${OC_COMMAND_DIR}/"
 
-echo "✔ Installed OpenCode plugin   : ${OC_PLUGINS_DIR}/hybrid-sage.mjs"
+echo "✔ Installed OpenCode plugin   : ${OC_PLUGINS_DIR}/hybrid-sage"
 echo "✔ Installed OpenCode commands : /fleet, /route, /escalate"
 
 OC_CONFIG="${HOME}/.config/opencode/opencode.json"
 if [[ -f "${OC_CONFIG}" ]]; then
-    python3 - "${OC_CONFIG}" "${OC_PLUGINS_DIR}/hybrid-sage.mjs" "${MCP_SERVER_SCRIPT}" <<'PYEOF'
-import json, sys
+    python3 - "${OC_CONFIG}" "${REPO_DIR}" "${MCP_SERVER_SCRIPT}" <<'PYEOF'
+import json, sys, shutil, time
 cfg_path, plugin_path, server_script = sys.argv[1], sys.argv[2], sys.argv[3]
 try:
     with open(cfg_path, "r", encoding="utf-8") as f:
         cfg = json.load(f)
-    plugins = cfg.setdefault("plugin", [])
-    if plugin_path not in plugins and "hybrid-sage" not in plugins:
+    shutil.copy2(cfg_path, f"{cfg_path}.pre-hybrid-sage-{time.time_ns()}")
+    previous = cfg.pop("plugin", [])
+    plugins = cfg.setdefault("plugins", [])
+    for item in previous:
+        if item not in plugins and not (isinstance(item, str) and item.endswith("/hybrid-sage.mjs")):
+            plugins.append(item)
+    if plugin_path not in plugins:
         plugins.append(plugin_path)
     mcp = cfg.setdefault("mcp", {})
     mcp["hybrid-sage"] = {
@@ -114,5 +131,11 @@ PYEOF
 
 echo ""
 echo "======================================================================"
-echo "⚡ Hybrid SAGE v2.0 Open-Core Plugin Installed (Cross-Device Ready)"
+echo "⚡ Hybrid SAGE v3.0 Plugin Installed (Antigravity + OpenCode)"
 echo "======================================================================"
+
+if command -v codex >/dev/null 2>&1; then
+  python3 "${REPO_DIR}/scripts/install-codex.py"
+else
+  echo "Codex not installed; run install-plugin.sh --codex-only when available."
+fi

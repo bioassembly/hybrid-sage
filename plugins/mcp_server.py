@@ -76,7 +76,7 @@ def main() -> int:
                     "result": {
                         "protocolVersion": params.get("protocolVersion", "2024-11-05"),
                         "capabilities": {"tools": {}},
-                        "serverInfo": {"name": "hybrid-sage", "version": "2.0.0"},
+                        "serverInfo": {"name": "hybrid-sage", "version": "3.0.0"},
                     },
                 }
             )
@@ -96,7 +96,7 @@ def main() -> int:
                         "id": msg_id,
                         "result": {
                             "content": [{"type": "text", "text": json.dumps(out, indent=2)}],
-                            "isError": False,
+                            "isError": out.get("status") in {"error", "verification_failed"},
                         },
                     }
                 )

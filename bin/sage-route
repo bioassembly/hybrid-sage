@@ -73,6 +73,9 @@ SENSITIVE_FILE_CONTENT_RE = re.compile(
 )
 
 TAG_PATTERNS: dict[str, list[tuple[str, str]]] = {
+    "codex": [
+        (r"\b(codex|openai|second\s+opinion)\b", "Requested Codex or an independent second opinion."),
+    ],
     "loop": [
         (r"\b(boilerplate|unit\s+test\w*|pytest|nf-test|stub-run|docstring\w*|type\s+hint\w*|format\w*|lint\w*)\b",
          "High-volume code generation, unit testing, or linting loop suits zero-marginal-cost local workhorse."),
@@ -121,8 +124,12 @@ def load_fleet(fleet_path: str | None = None) -> dict[str, Any]:
 def probe_unit_health(unit: dict[str, Any], timeout: float = 0.25) -> tuple[bool, bool, int]:
     """Return (online, slot_busy, live_max_context) via OpenCode CLI runtime."""
     max_ctx = int(unit.get("max_context", 262144))
+    if unit.get("endpoint", "").startswith("codex://"):
+        return bool(shutil.which("codex")), False, max_ctx
+    if unit.get("endpoint", "").startswith("opencode://") and unit.get("locality") != "local":
+        return bool(shutil.which("opencode")), False, max_ctx
     if unit.get("locality") == "cloud":
-        return True, False, max_ctx
+        return bool(shutil.which("agy")), False, max_ctx
 
     repo_root = Path(__file__).resolve().parent.parent
     if str(repo_root / "plugins") not in sys.path:
@@ -132,7 +139,10 @@ def probe_unit_health(unit: dict[str, Any], timeout: float = 0.25) -> tuple[bool
     rt = mcp_core.get_opencode_runtime(timeout=timeout)
     if rt.get("max_context"):
         max_ctx = int(rt["max_context"])
-    return bool(rt.get("online")), bool(rt.get("slot_0_busy")), max_ctx
+    # A CLI running on this host may still use a remote provider. Do not claim
+    # a privacy-cleared local unit is ready when its configured provider is cloud.
+    privacy_ready = not unit.get("privacy_cleared") or rt.get("privacy_cleared", False)
+    return bool(rt.get("online")) and privacy_ready, bool(rt.get("slot_0_busy")), max_ctx
 
 
 def strip_negated_clauses(text: str) -> str:
@@ -377,11 +387,22 @@ def classify_task(
 def execute_decision(decision: RouteDecision, prompt: str, files: list[str], agent_mode: bool) -> int:
     repo_bin = Path(__file__).resolve().parent
     sage_local = str(repo_bin / "sage-local")
-    if decision.locality == "local":
+    if decision.endpoint.startswith("codex://"):
+        if not decision.endpoint_online:
+            print("[sage-route] Codex CLI is unavailable; no fallback invoked.", file=sys.stderr)
+            return 1
+        sys.path.insert(0, str(repo_bin.parent / "plugins"))
+        import mcp_core
+        result = mcp_core.handle_consult_codex({"prompt": prompt, "files": files})
+        print(json.dumps(result, indent=2))
+        return 0 if result.get("status") == "ok" else 1
+    if decision.locality == "local" or decision.endpoint.startswith("opencode://"):
         if not decision.endpoint_online:
             print(f"[sage-route] Error: {decision.unit_id} ({decision.endpoint}) is offline or blocked.", file=sys.stderr)
             return 1
         cmd = [sage_local]
+        if decision.locality == "local":
+            cmd.append("--require-local")
         if decision.model_id and decision.model_id != "opencode-default":
             cmd.extend(["--model-id", decision.model_id])
         for f in files:
@@ -391,7 +412,7 @@ def execute_decision(decision: RouteDecision, prompt: str, files: list[str], age
     else:
         print(
             f"\033[36m[sage-route] Task routed to Cloud Unit '{decision.unit_id}' ({decision.model}).\033[0m\n"
-            f"Recommended action in Antigravity: {decision.recommended_command}",
+            f"Recommended action in the selected harness: {decision.recommended_command}",
             file=sys.stderr,
         )
         return 0

@@ -4,9 +4,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "plugins"))
 import mcp_core
+from state_isolation import IsolatedStateMixin
 
 
-class TestHybridSageV2(unittest.TestCase):
+class TestHybridSageV2(IsolatedStateMixin, unittest.TestCase):
 
     def test_redact_secrets(self):
         redacted, findings = mcp_core.redact_sensitive_text(
@@ -51,7 +52,7 @@ class TestHybridSageV2(unittest.TestCase):
     def test_tools_schema_v2(self):
         self.assertEqual(
             {t["name"] for t in mcp_core.TOOLS},
-            {"fleet_status", "route_task", "delegate_local", "manage_handoff", "airgap_scan", "escalate_task"},
+            {"fleet_status", "route_task", "delegate_local", "manage_handoff", "airgap_scan", "escalate_task", "consult_codex", "list_worker_models"},
         )
 
     def test_opencode_runtime_inspection(self):
@@ -237,7 +238,7 @@ class TestHybridSageV2(unittest.TestCase):
         mock_proc.stdout = sample_stdout
         mock_proc.stderr = ""
 
-        with patch("subprocess.run", return_value=mock_proc):
+        with patch("shutil.which", return_value="/mock/opencode"), patch.object(mcp_core, "select_best_local_node", return_value={"online": True, "endpoint": "opencode://cli", "slot_0_busy": False}), patch("subprocess.run", return_value=mock_proc):
             res = mcp_core.handle_delegate_local({
                 "prompt": "Review code",
                 "mode": "review",
@@ -255,7 +256,7 @@ class TestHybridSageV2(unittest.TestCase):
         mock_popen = MagicMock()
         mock_popen.pid = 99999
 
-        with patch("subprocess.Popen", return_value=mock_popen):
+        with patch("shutil.which", return_value="/mock/opencode"), patch.object(mcp_core, "select_best_local_node", return_value={"online": True, "endpoint": "opencode://cli", "slot_0_busy": False}), patch("subprocess.Popen", return_value=mock_popen):
             res = mcp_core.handle_delegate_local({
                 "prompt": "Long building task",
                 "mode": "code",
@@ -402,7 +403,7 @@ class TestHybridSageV2(unittest.TestCase):
             )
             verify_proc = MagicMock(returncode=0, stdout="ok", stderr="")
 
-            with patch.object(mcp_core, "select_best_local_node", return_value={"online": True, "endpoint": "opencode://cli", "slot_0_busy": False}), \
+            with patch("shutil.which", return_value="/mock/opencode"), patch.object(mcp_core, "select_best_local_node", return_value={"online": True, "endpoint": "opencode://cli", "slot_0_busy": False}), \
                  patch.object(mcp_core, "record_delegation_stat"), \
                  patch("subprocess.run", side_effect=[opencode_proc, verify_proc]) as mock_run:
                 res = mcp_core.handle_delegate_local({
