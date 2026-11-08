@@ -2,6 +2,7 @@
 """Persistent Hybrid SAGE controls shared by Codex, Antigravity, and OpenCode."""
 import argparse
 import json
+import shlex
 from pathlib import Path
 import sys
 
@@ -36,7 +37,8 @@ def main() -> int:
         for model in result.get("model_details", []):
             print(f"{model['model_id']}\t{model['price_status']}\t{json.dumps(model.get('cost', {}), separators=(',', ':'))}")
         if result.get("next_offset") is not None:
-            print(f"More models: sage models --offset {result['next_offset']} --limit {args.limit}", file=sys.stderr)
+            provider_flag = " --provider " + shlex.quote(args.provider) if args.provider else ""
+            print(f"More models: sage models{provider_flag} --offset {result['next_offset']} --limit {args.limit}", file=sys.stderr)
         print("Advertised catalog prices; availability and quotas are unverified.", file=sys.stderr)
     else:
         print(f"Hybrid: {'on' if result['enabled'] else 'off'} | assistant: {result['model_id']} | paid allowed: {result['allow_paid']}")
