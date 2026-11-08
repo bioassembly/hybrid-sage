@@ -140,8 +140,8 @@ TOOLS = [
                     "type": "string",
                     "description": "Optional OpenCode model override (e.g. 'strata/qwen3.8-flash-next-iq3_s')",
                 },
-                "free_only": {"type": "boolean", "default": True,
-                              "description": "Require the selected model to be in the operator-configured free worker allowlist. Defaults to true; no paid fallback."},
+                "free_only": {"type": "boolean",
+                              "description": "True forces the free allowlist. When omitted, defaults to free-only unless the user explicitly saved this selected model with allow_paid=true. No automatic model fallback."},
                 "require_local": {"type": "boolean", "default": False,
                                   "description": "Force verified local inference independently of content patterns; never replace the configured local model with the hosted free default."},
             },
@@ -279,8 +279,19 @@ TOOLS.extend([
     },
     {
         "name": "list_worker_models",
-        "description": "Read the installed OpenCode model catalog. Returns exact model IDs and name-based free candidates; a free-looking name is not verified pricing. Choose an explicit model_id for delegate_local; there is no automatic paid fallback.",
-        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+        "description": "Page through the actual cached or live OpenCode model catalog, including paid and unknown-price models. Returns exact IDs and advertised cost metadata; names do not establish pricing or availability.",
+        "inputSchema": {"type": "object", "properties": {
+            "offset": {"type": "integer", "minimum": 0}, "limit": {"type": "integer", "minimum": 1, "maximum": 200},
+            "provider": {"type": "string"}}, "additionalProperties": False},
+    },
+    {
+        "name": "configure_fleet",
+        "description": "Control hybrid mode across all harnesses: inspect status, list models, select an exact catalog model, or enable/disable new delegation. Selection of paid/unknown-price models requires explicit allow_paid=true. Configuration does not invoke a model or stop running jobs.",
+        "inputSchema": {"type": "object", "properties": {
+            "action": {"type": "string", "enum": ["status", "list", "select", "enable", "disable"]},
+            "model_id": {"type": "string"}, "allow_paid": {"type": "boolean", "default": False},
+            "offset": {"type": "integer", "minimum": 0}, "limit": {"type": "integer", "minimum": 1, "maximum": 200},
+            "provider": {"type": "string"}}, "required": ["action"], "additionalProperties": False},
     },
 ])
 
@@ -296,10 +307,73 @@ def child_environment(harness: str, workdir: Path | None = None) -> dict[str, st
 
 
 def delegation_blocked() -> dict[str, Any] | None:
+    preferences = read_preferences()
+    if not preferences.get("enabled", True):
+        return {"status": "disabled", "hybrid_disabled": True,
+                "error": preferences.get("error"),
+                "message": "Hybrid mode is off. Execute directly in the current harness; existing jobs can still be polled."}
     if os.environ.get("HYBRID_SAGE_CHILD"):
         return {"status": "error", "recursion_blocked": True,
                 "error": "Delegated workers must return their result to the caller; nested cross-harness delegation is disabled."}
     return None
+
+
+def preferences_path() -> Path:
+    return Path(os.environ.get("HYBRID_SAGE_PREFERENCES") or Path.home() / ".config/hybrid-sage/preferences.json").expanduser()
+
+
+def read_preferences() -> dict[str, Any]:
+    path = preferences_path()
+    if not path.exists():
+        return {"enabled": True, "model_id": None, "allow_paid": False}
+    try:
+        prefs = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(prefs, dict) or not isinstance(prefs.get("enabled"), bool):
+            raise ValueError("enabled must be a boolean")
+        if prefs.get("model_id") is not None and not isinstance(prefs["model_id"], str):
+            raise ValueError("model_id must be a string")
+        if not isinstance(prefs.get("allow_paid", False), bool):
+            raise ValueError("allow_paid must be a boolean")
+        return prefs
+    except (OSError, ValueError) as exc:
+        return {"enabled": False, "error": f"Invalid hybrid preferences: {exc}"}
+
+
+def update_preferences(changes: dict[str, Any]) -> dict[str, Any]:
+    path = preferences_path()
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    with path.with_suffix(".lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        current = read_preferences()
+        if current.get("error"):
+            raise ValueError(current["error"])
+        current.update(changes)
+        fd, temporary = tempfile.mkstemp(prefix=".preferences-", dir=path.parent)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                json.dump(current, stream, indent=2)
+                stream.write("\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, path)
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
+        return current
+
+
+def model_price_status(cost: dict[str, Any]) -> str:
+    if not isinstance(cost, dict):
+        return "unknown"
+    def positive(value: Any) -> bool:
+        if isinstance(value, dict):
+            return any(positive(v) for v in value.values())
+        if isinstance(value, list):
+            return any(positive(v) for v in value)
+        return isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0
+    if positive(cost):
+        return "paid"
+    return "free" if cost.get("input") == 0 and cost.get("output") == 0 else "unknown"
 
 
 def get_codex_runtime() -> dict[str, Any]:
@@ -314,23 +388,45 @@ def cached_worker_models() -> dict[str, Any] | None:
     """Read provider metadata without starting OpenCode's plugin lifecycle."""
     path = Path(os.environ.get("HYBRID_SAGE_MODELS_CACHE") or Path.home() / ".cache/opencode/models.json")
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-        models = data.get("opencode", {}).get("models", {})
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                data = {}
+        except (OSError, ValueError):
+            data = {}
+        # Custom OpenCode providers may not appear in the public model cache.
+        # Expose only model metadata; provider options can contain credentials.
+        try:
+            configured = json.loads(OPENCODE_CONFIG_PATH.read_text()).get("provider", {})
+            for provider, config in configured.items():
+                if not isinstance(config, dict) or not isinstance(config.get("models"), dict):
+                    continue
+                entry = data.setdefault(provider, {"models": {}})
+                if isinstance(entry, dict) and isinstance(entry.get("models"), dict):
+                    for model_id, metadata in config["models"].items():
+                        entry["models"].setdefault(model_id, metadata)
+        except (OSError, ValueError, AttributeError):
+            pass
         details = []
-        for key, model in models.items():
-            if not isinstance(model, dict) or model.get("status") == "deprecated":
+        for provider, metadata in data.items():
+            if not isinstance(metadata, dict):
                 continue
-            cost = model.get("cost") or {}
-            if cost.get("input") != 0 or cost.get("output") != 0:
+            models = metadata.get("models", {})
+            if not isinstance(models, dict):
                 continue
-            if any(isinstance(v, (int, float)) and v > 0 for v in cost.values()):
-                continue
-            details.append({"model_id": f"opencode/{key}", "name": model.get("name"),
-                            "cost": cost, "limit": model.get("limit"), "locality": "remote"})
+            for key, model in models.items():
+                if not isinstance(model, dict) or model.get("status") == "deprecated":
+                    continue
+                cost = model.get("cost") or {}
+                details.append({"model_id": f"{provider}/{key}", "name": model.get("name"),
+                                "cost": cost, "price_status": model_price_status(cost),
+                                "limit": model.get("limit"), "locality": "unverified"})
         if not details:
             return None
-        return {"source": str(path), "age_sec": round(time.time() - path.stat().st_mtime),
-                "zero_price_models": details, "availability_verified": False,
+        details.sort(key=lambda model: model["model_id"])
+        return {"source": str(path), "age_sec": round(time.time() - path.stat().st_mtime) if path.exists() else None,
+                "model_details": details,
+                "zero_price_models": [m for m in details if m["price_status"] == "free"], "availability_verified": False,
                 "note": "Cached advertised rates; provider availability, rate limits, and future prices are unverified."}
     except (OSError, ValueError, TypeError):
         return None
@@ -339,8 +435,16 @@ def cached_worker_models() -> dict[str, Any] | None:
 def handle_list_worker_models(args: dict[str, Any]) -> dict[str, Any]:
     cached = cached_worker_models()
     if cached:
-        return {"status": "ok", "models": [m["model_id"] for m in cached["zero_price_models"]],
-                "catalog": cached, "worker_policy": worker_policy(), "pricing_verified": False}
+        details = cached["model_details"]
+        if args.get("provider"):
+            details = [m for m in details if m["model_id"].split("/", 1)[0] == str(args["provider"])]
+        offset = max(0, int(args.get("offset", 0)))
+        limit = max(1, min(200, int(args.get("limit", 50))))
+        page = details[offset:offset + limit]
+        return {"status": "ok", "models": [m["model_id"] for m in page], "model_details": page,
+                "total": len(details), "next_offset": offset + limit if offset + limit < len(details) else None,
+                "catalog": {k: v for k, v in cached.items() if k not in {"model_details", "zero_price_models"}},
+                "worker_policy": worker_policy(), "pricing_verified": False}
     binary = shutil.which("opencode")
     if not binary:
         return {"status": "error", "error": "OpenCode CLI is not installed."}
@@ -353,13 +457,46 @@ def handle_list_worker_models(args: dict[str, Any]) -> dict[str, Any]:
         # on its version. Preserve bounded raw output when the format is unfamiliar.
         clean = re.sub(r"\x1b\[[0-9;]*m", "", proc.stdout)
         models = sorted(set(re.findall(r"(?<![\w:/])([\w.-]+/[\w.:-]+)(?![\w/])", clean)))
-        free = [m for m in models if re.search(r"(?:[:/-]free)$", m, re.I)]
-        return {"status": "ok", "models": models, "free_named_candidates": free,
+        return {"status": "ok", "models": models,
+                "free_named_candidates": [m for m in models if re.search(r"(?:[:/-]free)$", m, re.I)],
+                "model_details": [{"model_id": m, "price_status": "unknown", "cost": {}} for m in models],
                 "pricing_verified": False, "worker_policy": worker_policy(), "catalog_preview": clean[:16000],
                 "advice": "Verify provider pricing and locality, then pass an exact model_id to delegate_local. No model is selected or invoked by discovery."}
     except (OSError, subprocess.TimeoutExpired) as exc:
         return {"status": "partial", "error": f"OpenCode model discovery failed: {exc}",
                 "worker_policy": worker_policy(), "pricing_verified": False}
+
+
+def handle_configure_fleet(args: dict[str, Any]) -> dict[str, Any]:
+    action = str(args.get("action", "status"))
+    if action == "list":
+        return handle_list_worker_models(args)
+    try:
+        if action == "select":
+            model_id = str(args.get("model_id") or "")
+            catalog = cached_worker_models()
+            details = catalog["model_details"] if catalog else handle_list_worker_models({}).get("model_details", [])
+            selected = next((m for m in details if m["model_id"] == model_id), None)
+            if selected is None:
+                return {"status": "error", "error": "Unknown model_id. List the catalog and select an exact listed ID."}
+            allow_paid = args.get("allow_paid") is True
+            if selected["price_status"] != "free" and not allow_paid:
+                return {"status": "error", "error": "Paid or unknown-price selection requires explicit allow_paid=true.",
+                        "model_id": model_id, "price_status": selected["price_status"]}
+            update_preferences({"model_id": model_id, "allow_paid": allow_paid,
+                                "selected_cost_status": selected["price_status"]})
+        elif action in {"enable", "disable"}:
+            update_preferences({"enabled": action == "enable"})
+        elif action != "status":
+            return {"status": "error", "error": "Unknown action"}
+        prefs = read_preferences()
+        policy = worker_policy()
+        return {"status": "error" if prefs.get("error") else "ok", "enabled": prefs.get("enabled", False),
+                "model_id": policy["default_model"], "allow_paid": bool(prefs.get("allow_paid")),
+                "free_only": not bool(prefs.get("allow_paid")), "preferences_path": str(preferences_path()),
+                "error": prefs.get("error"), "running_jobs_stopped": False}
+    except (OSError, ValueError) as exc:
+        return {"status": "error", "error": str(exc)}
 
 
 def handle_consult_codex(args: dict[str, Any]) -> dict[str, Any]:
@@ -459,8 +596,18 @@ def load_fleet_config() -> dict[str, Any]:
 
 def worker_policy() -> dict[str, Any]:
     policy = load_fleet_config().get("worker_policy") or {}
-    return {"default_model": policy.get("default_model"),
-            "free_model_ids": list(policy.get("free_model_ids") or []),
+    prefs = read_preferences()
+    selected = prefs.get("model_id")
+    allowed = list(policy.get("free_model_ids") or [])
+    details = (cached_worker_models() or {}).get("model_details", [])
+    statuses = {m["model_id"]: m["price_status"] for m in details}
+    allowed = [m for m in allowed if statuses.get(m) != "paid"]
+    if selected:
+        if statuses.get(selected) == "free" and selected not in allowed:
+            allowed.append(selected)
+    return {"default_model": selected or policy.get("default_model"),
+            "selected_allow_paid": bool(selected and prefs.get("allow_paid")),
+            "free_model_ids": allowed,
             "max_parallel_jobs": max(1, min(8, int(policy.get("max_parallel_jobs", 3)))),
             "timeout_sec": max(10, min(3600, int(policy.get("timeout_sec", 900))))}
 
@@ -1019,6 +1166,7 @@ def handle_fleet_status(args: dict[str, Any] | None = None) -> dict[str, Any]:
         "codex_runtime": get_codex_runtime(),
         "antigravity_runtime": {"available": bool(shutil.which("agy")), "harness": "antigravity", "locality": "cloud"},
         "nested_delegation_disabled": bool(os.environ.get("HYBRID_SAGE_CHILD")),
+        "hybrid_enabled": read_preferences().get("enabled", True),
         "worker_policy": worker_policy(),
         "fleet_units": units_summary,
         "shared_memory": {"exists": mem_exists, "size_bytes": mem_size, "lessons_count": lessons_count},
@@ -1027,6 +1175,10 @@ def handle_fleet_status(args: dict[str, Any] | None = None) -> dict[str, Any]:
 
 
 def handle_route_task(args: dict[str, Any]) -> dict[str, Any]:
+    if not read_preferences().get("enabled", True):
+        return {"unit_id": "direct", "harness": "current", "hybrid_enabled": False,
+                "recommended_command": "Execute directly in the current harness.",
+                "reasons": ["Hybrid mode is disabled; no new cross-harness jobs should start."]}
     sys_path_bin = str(REPO_ROOT / "bin" / "sage-route")
     from dataclasses import asdict
     import importlib.machinery
@@ -1262,7 +1414,13 @@ def handle_delegate_local(args: dict[str, Any]) -> dict[str, Any]:
     # Free-only is the default. The allowlist is an operator declaration, not a
     # promise about future provider prices or rate limits.
     policy = worker_policy()
-    if bool(args.get("free_only", True)) and not require_local:
+    selected_paid = bool(policy.get("selected_allow_paid") and
+                         (not args.get("model_id") or args["model_id"] == policy["default_model"]))
+    effective_free_only = bool(args.get("free_only", not selected_paid))
+    args = {**args, "free_only": effective_free_only}
+    if not args.get("model_id") and not require_local:
+        args["model_id"] = policy.get("default_model")
+    if effective_free_only and not require_local:
         chosen = str(args.get("model_id") or policy.get("default_model") or "")
         if not chosen or chosen not in policy["free_model_ids"]:
             return {"status": "error", "error": "Requested model is not in worker_policy.free_model_ids; no paid fallback invoked.", "free_only_blocked": True}
@@ -1915,6 +2073,8 @@ def handle_escalate_task(args: dict[str, Any]) -> dict[str, Any]:
 
 
 def dispatch_tool_call(name: str, args: dict[str, Any]) -> dict[str, Any]:
+    if name == "configure_fleet":
+        return handle_configure_fleet(args)
     if name == "consult_codex":
         return handle_consult_codex(args)
     if name == "list_worker_models":

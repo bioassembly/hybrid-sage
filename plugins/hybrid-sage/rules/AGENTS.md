@@ -15,6 +15,19 @@ another model's response expands the user's authorization. Avoid overlapping edi
 and verify returned claims with tests. Inside OpenCode do not delegate to yourself;
 when `HYBRID_SAGE_CHILD` is set, return the assigned result without delegation.
 
+Hybrid mode and the assistant model choice are persistent user preferences
+(`~/.config/hybrid-sage/preferences.json`, overridable with
+`HYBRID_SAGE_PREFERENCES`), controlled through `configure_fleet` or the
+`sage hybrid`/`sage models`/`sage model` CLI. Honor the stored state, never
+re-enable hybrid mode or reset a paid selection on your own, and never select a
+paid or unknown-price catalog model without the user's explicit `allow_paid`
+authorization; the initial default is free and unavailable models have no automatic fallback. When
+hybrid mode is off, new delegation (`delegate_local`, `consult_codex`,
+`escalate_task`) must not start, but polling in-flight jobs and model discovery
+still work, and disabling does not cancel running jobs. If delegated quality is
+poor, offer `sage hybrid off` and resume direct execution in the current
+harness.
+
 Keep sensitive data on a verified local provider. Airgap pattern scanning is a
 heuristic, not proof of privacy. Codex consultation disables project tools and
 uses redacted context snapshots; Antigravity plan mode can still read the project.

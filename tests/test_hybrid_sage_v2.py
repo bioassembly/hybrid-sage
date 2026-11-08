@@ -52,7 +52,7 @@ class TestHybridSageV2(IsolatedStateMixin, unittest.TestCase):
     def test_tools_schema_v2(self):
         self.assertEqual(
             {t["name"] for t in mcp_core.TOOLS},
-            {"fleet_status", "route_task", "delegate_local", "manage_handoff", "airgap_scan", "escalate_task", "consult_codex", "list_worker_models"},
+            {"fleet_status", "route_task", "delegate_local", "manage_handoff", "airgap_scan", "escalate_task", "consult_codex", "list_worker_models", "configure_fleet"},
         )
 
     def test_opencode_runtime_inspection(self):

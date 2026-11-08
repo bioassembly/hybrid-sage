@@ -178,7 +178,7 @@ class ThreeHarnessTests(IsolatedStateMixin, unittest.TestCase):
             self.assertEqual(result["status"], "busy_skipped")
             launch.assert_not_called()
 
-    def test_cached_catalog_excludes_paid_and_deprecated_models_without_running_cli(self):
+    def test_cached_catalog_labels_paid_models_and_excludes_deprecated_without_running_cli(self):
         with tempfile.TemporaryDirectory() as tmp:
             cache = Path(tmp) / "models.json"
             cache.write_text(json.dumps({"opencode": {"models": {
@@ -188,7 +188,9 @@ class ThreeHarnessTests(IsolatedStateMixin, unittest.TestCase):
             }}}))
             with patch.dict(os.environ, {"HYBRID_SAGE_MODELS_CACHE": str(cache)}), patch.object(mcp_core.subprocess, "run") as run:
                 result = mcp_core.handle_list_worker_models({})
-            self.assertEqual(result["models"], ["opencode/good-free"])
+            self.assertEqual(result["models"], ["opencode/good-free", "opencode/misleading-free"])
+            prices = {m['model_id']: m['price_status'] for m in result['model_details']}
+            self.assertEqual(prices, {'opencode/good-free': 'free', 'opencode/misleading-free': 'paid'})
             self.assertFalse(result["catalog"]["availability_verified"])
             run.assert_not_called()
 

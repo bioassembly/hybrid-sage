@@ -14,6 +14,16 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, '../..');
 const mcpServerScript = path.join(repoRoot, 'plugins', 'mcp_server.py');
 
+function fleetPreferences() {
+  const file = process.env.HYBRID_SAGE_PREFERENCES || path.join(os.homedir(), '.config/hybrid-sage/preferences.json');
+  try {
+    const saved = JSON.parse(fs.readFileSync(file, 'utf8'));
+    return { enabled: saved.enabled === true, model: saved.model_id || 'configured default' };
+  } catch (error) {
+    return { enabled: error.code === 'ENOENT', model: 'configured default' };
+  }
+}
+
 async function legacyServer({ client } = {}) {
   const skillsDir = path.join(repoRoot, 'skills');
 
@@ -58,8 +68,15 @@ async function legacyServer({ client } = {}) {
     // Inject the Hybrid SAGE routing protocol & project-scoped lessons into system prompts
     'experimental.chat.system.transform': async (_input, output) => {
       if (process.env.HYBRID_SAGE_CHILD) return;
+      const preferences = fleetPreferences();
+      if (!preferences.enabled) {
+        output.system.push('[HYBRID SAGE DISABLED] Execute directly in the current harness. Do not start new worker jobs or cross-harness consultations. Polling and discovery remain available. Re-enable only at the user\'s request.');
+        return;
+      }
       const instructions = `
 [HYBRID SAGE THREE-HARNESS PROTOCOL v3]
+Persisted assistant model: ${JSON.stringify(preferences.model)}. Honor this choice and its saved cost policy.
+Use configure_fleet when the user asks to list/select models or turn hybrid mode on/off.
 OpenCode workers execute assigned implementation and test loops directly.
 Frontier Codex/Antigravity sessions own decomposition, integration, and final review;
 prefer bounded independent free-only worker jobs for substantial separable work.

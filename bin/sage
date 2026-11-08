@@ -24,9 +24,12 @@ usage() {
 Usage: sage <command> [arguments]
 
 Core Commands:
+  hybrid on|off|status      Control persistent hybrid mode across all three harnesses
+  models [flags]           List catalog models and advertised prices (paged)
+  model <provider/model>   Select the assistant worker; --allow-paid required for paid/unknown prices
   status                    Live fleet units, OpenCode slot 0, and shared bridge telemetry
   route <prompt> [flags]    Classify a task across your fleet (add -x to execute immediately)
-  local <prompt> [flags]    Delegate a prompt/file directly to Local OpenCode ($0 cloud quota)
+  local <prompt> [flags]    Delegate through OpenCode using the selected assistant model
   handoff <cmd> [dir]       Manage NOTES.md handoffs (status | plan | review | verify | exec)
   memory <cmd> [query]      Inspect/search/backup shared MCP memory (status | list | search | backup)
   test                      Run the full integration, health, negation, and elasticity test suite
@@ -44,6 +47,9 @@ EOF
 }
 
 case "${SUBCMD}" in
+    hybrid|models|model)
+        exec python3 "${BIN_DIR}/sage-control" "${SUBCMD}" "$@"
+        ;;
     status)
         exec bash "${REPO_DIR}/scripts/fleet-status.sh" "$@"
         ;;

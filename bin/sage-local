@@ -67,9 +67,10 @@ def main() -> int:
         "verify_command": args.verify,
         "skip_if_busy": args.skip_if_busy,
         "async_mode": args.async_job,
-        "free_only": not args.allow_paid,
         "require_local": args.require_local,
     }
+    if args.allow_paid:
+        payload["free_only"] = False
     if args.model_id and args.model_id != "opencode-default":
         payload["model_id"] = args.model_id
     if args.workdir:

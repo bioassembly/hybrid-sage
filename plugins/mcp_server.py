@@ -96,7 +96,7 @@ def main() -> int:
                         "id": msg_id,
                         "result": {
                             "content": [{"type": "text", "text": json.dumps(out, indent=2)}],
-                            "isError": out.get("status") in {"error", "verification_failed"},
+                            "isError": out.get("status") in {"error", "verification_failed", "disabled"},
                         },
                     }
                 )

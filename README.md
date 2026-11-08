@@ -39,6 +39,7 @@ delegate_local(job_id="job-...")
 | `route_task` | Recommends a configured unit using capability tags, available CLIs, context estimates, and sensitive-data hints. It does not authorize provider cost. |
 | `manage_handoff` | Exchanges project-scoped task notes and lessons. Recalled lessons must be checked against current code and tests. |
 | `airgap_scan` | Screens text/files for configured secret and clinical-identifier patterns and can redact matches. It is a heuristic, not proof of anonymization. |
+| `configure_fleet` | Persistent control plane: fleet status, paged model listing, exact model selection (paid/unknown prices need `allow_paid=true`), and enable/disable of new delegation. Toggles never cancel running jobs and never reset user choices. |
 
 Codex and Antigravity can summon OpenCode workers. OpenCode and Antigravity can
 consult Codex; OpenCode and Codex can consult Antigravity. Inside an OpenCode
@@ -46,10 +47,11 @@ worker, complete the assigned task directly instead of delegating to itself.
 
 ## Free worker policy
 
-`delegate_local` defaults to `free_only=true`. It selects
-`worker_policy.default_model` or the supplied `model_id` and rejects models outside
-`free_model_ids`. An unavailable model returns an error; no paid fallback occurs.
-Pass `free_only=false` only when a different provider is already authorized.
+`delegate_local` is free-only by default. It uses the persisted assistant choice,
+then the fleet default, unless an exact model override is supplied. A saved
+`allow_paid=true` selection authorizes that model on later tasks; an explicit
+`free_only=true` still forces the free allowlist. Unavailable models return an
+error without substituting another model.
 
 The initial preferred worker matches this setup's selected model,
 `opencode/glm-5.3-flash-free`. The initial allowlist also includes zero-price
@@ -73,6 +75,26 @@ with `HYBRID_SAGE_FLEET`:
 
 A local CLI can use a remote provider. Free hosted workers are cloud inference;
 private datasets require a separately configured and verified local provider.
+
+## Persistent fleet controls
+
+Run `bash install.sh` once to install the `sage` management CLI alongside the
+plugins. You can also ask your assistant to list/select a model or disable/enable
+hybrid mode through `configure_fleet`; ordinary Codex launches remain unchanged.
+
+Hybrid mode and the selected worker model are persistent choices, stored in
+`~/.config/hybrid-sage/preferences.json` (override the location with the
+`HYBRID_SAGE_PREFERENCES` environment variable). The harnesses honor that saved
+state and never re-enable hybrid mode or reset a paid selection on their own;
+you remain in control and can disable hybrid mode any time the delegated
+quality disappoints.
+
+- MCP: `configure_fleet(action="status"|"list"|"select"|"enable"|"disable", model_id=..., allow_paid=False, provider=..., offset=..., limit=...)`. Configuration never invokes a model and never stops running jobs (`running_jobs_stopped` stays false).
+- CLI: `sage hybrid on|off|status` inspects or toggles persistent hybrid mode, `sage models --provider opencode` lists exact catalog IDs with advertised prices, and `sage model provider/model [--allow-paid]` persists the assistant worker model.
+- Selecting a paid or unknown-price catalog model requires an explicit `allow_paid=true`. The initial default is free; a saved paid selection applies only after that explicit opt-in.
+- `enable`/`disable` only change whether *new* work starts. With hybrid off, new `delegate_local`, `consult_codex`, and `escalate_task` calls return a disabled status, while `delegate_local(job_id=...)` polling, `list_worker_models` discovery, and `route_task` still work. Already-running jobs are not cancelled.
+- A selected model survives enable/disable toggles: disable then re-enable picks the same assistant model and paid authorization again.
+
 The runtime matches the active provider exactly rather than probing an unrelated
 configured provider. Alternate worker selection does not depend on the default
 local inference endpoint being online.

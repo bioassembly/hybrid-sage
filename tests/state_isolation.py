@@ -13,6 +13,16 @@ class IsolatedStateMixin:
         temp = tempfile.TemporaryDirectory(prefix="hybrid-sage-test-state-")
         self.addCleanup(temp.cleanup)
         self.state_dir = Path(temp.name)
+        fleet = self.state_dir / "fleet.json"
+        fleet.write_bytes((Path(mcp_core.__file__).resolve().parents[1] / "configs/fleet.json").read_bytes())
+        preferences = patch.dict(os.environ, {
+            "HYBRID_SAGE_PREFERENCES": str(self.state_dir / "preferences.json"),
+            "HYBRID_SAGE_CHILD": "",
+            "HYBRID_SAGE_MODELS_CACHE": str(self.state_dir / "models.json"),
+            "HYBRID_SAGE_FLEET": str(fleet),
+        })
+        preferences.start()
+        self.addCleanup(preferences.stop)
         previous_cwd = Path.cwd()
         os.chdir(self.state_dir)
         self.addCleanup(os.chdir, previous_cwd)
@@ -21,6 +31,7 @@ class IsolatedStateMixin:
             "SHARED_MEMORY_PATH": "memory.json",
             "STATS_LEDGER_PATH": "stats.jsonl",
             "JOBS_DIR": "jobs",
+            "OPENCODE_CONFIG_PATH": "opencode.json",
         }.items():
             patcher = patch.object(mcp_core, name, self.state_dir / leaf)
             patcher.start()

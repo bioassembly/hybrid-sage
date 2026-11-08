@@ -208,7 +208,26 @@ def classify_task(
     explicit_files: list[str] | None = None,
     stdin_text: str = "",
 ) -> RouteDecision:
-    units = [u for u in fleet_cfg.get("units", []) if u.get("enabled", True)]
+    plugin_path = str(Path(__file__).resolve().parent.parent / "plugins")
+    if plugin_path not in sys.path:
+        sys.path.insert(0, plugin_path)
+    import mcp_core
+    if not mcp_core.read_preferences().get("enabled", True):
+        return RouteDecision(unit_id="direct", role="Current harness", model="Current model",
+                             model_id="current", harness="current", endpoint="direct://current", locality="current",
+                             endpoint_online=True, slot_busy=False, estimated_tokens=0, confidence="EXPLICIT MODE",
+                             active_fleet_size=0, reasons=["Hybrid mode is disabled."],
+                             recommended_command="Execute directly in the current harness.")
+    units = [dict(u) for u in fleet_cfg.get("units", []) if u.get("enabled", True)]
+    selected_model = mcp_core.worker_policy().get("default_model")
+    if selected_model:
+        for unit in units:
+            if unit.get("endpoint", "").startswith("opencode://") and unit.get("locality") != "local":
+                unit["model_id"] = selected_model
+                unit["model"] = selected_model
+                unit["role"] = "Selected assistant worker via OpenCode"
+                model_literal = repr(selected_model).replace("{", "{{").replace("}", "}}")
+                unit["command_template"] = "delegate_local(prompt={prompt}, model_id=" + model_literal + ")"
     if not units:
         raise ValueError("No enabled model units found in fleet configuration.")
 
@@ -385,6 +404,9 @@ def classify_task(
 
 
 def execute_decision(decision: RouteDecision, prompt: str, files: list[str], agent_mode: bool) -> int:
+    if decision.endpoint == "direct://current":
+        print("Hybrid mode is disabled. Execute directly in the current harness; no delegated job started.")
+        return 0
     repo_bin = Path(__file__).resolve().parent
     sage_local = str(repo_bin / "sage-local")
     if decision.endpoint.startswith("codex://"):

@@ -1,0 +1,47 @@
+#!/usr/bin/env python3
+"""Persistent Hybrid SAGE controls shared by Codex, Antigravity, and OpenCode."""
+import argparse
+import json
+from pathlib import Path
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "plugins"))
+import mcp_core
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    commands = parser.add_subparsers(dest="command", required=True)
+    hybrid = commands.add_parser("hybrid", help="Enable, disable, or inspect hybrid mode")
+    hybrid.add_argument("mode", choices=["on", "off", "status"], default="status", nargs="?")
+    models = commands.add_parser("models", help="List catalog model IDs and advertised pricing")
+    models.add_argument("--provider")
+    models.add_argument("--offset", type=int, default=0)
+    models.add_argument("--limit", type=int, default=200)
+    select = commands.add_parser("model", help="Persist an exact catalog model as the assistant worker")
+    select.add_argument("model_id")
+    select.add_argument("--allow-paid", action="store_true", help="Explicitly authorize this paid or unknown-price model")
+    for child in [hybrid, models, select]:
+        child.add_argument("--json", action="store_true")
+    args = parser.parse_args()
+    if args.command == "hybrid":
+        result = mcp_core.handle_configure_fleet({"action": {"on": "enable", "off": "disable", "status": "status"}[args.mode]})
+    elif args.command == "model":
+        result = mcp_core.handle_configure_fleet({"action": "select", "model_id": args.model_id, "allow_paid": args.allow_paid})
+    else:
+        result = mcp_core.handle_configure_fleet({"action": "list", "offset": args.offset, "limit": args.limit, "provider": args.provider})
+    if args.json or result.get("status") not in {"ok", "partial"}:
+        print(json.dumps(result, indent=2))
+    elif args.command == "models":
+        for model in result.get("model_details", []):
+            print(f"{model['model_id']}\t{model['price_status']}\t{json.dumps(model.get('cost', {}), separators=(',', ':'))}")
+        if result.get("next_offset") is not None:
+            print(f"More models: sage models --offset {result['next_offset']} --limit {args.limit}", file=sys.stderr)
+        print("Advertised catalog prices; availability and quotas are unverified.", file=sys.stderr)
+    else:
+        print(f"Hybrid: {'on' if result['enabled'] else 'off'} | assistant: {result['model_id']} | paid allowed: {result['allow_paid']}")
+    return 0 if result.get("status") in {"ok", "partial"} else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

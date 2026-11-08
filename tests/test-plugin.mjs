@@ -1,5 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import plugin from '../.opencode/plugins/hybrid-sage.mjs';
 
 function context() {
@@ -53,4 +56,26 @@ test('v1 adapter preserves native registration for older clients', async () => {
   await hooks.config(config);
   assert.ok(config.mcp['hybrid-sage'].enabled);
   assert.ok(config.command.fleet);
+});
+
+test('persisted mode and model changes apply to existing plugin hooks without restart', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sage-plugin-preferences-'));
+  const previous = process.env.HYBRID_SAGE_PREFERENCES;
+  process.env.HYBRID_SAGE_PREFERENCES = path.join(dir, 'preferences.json');
+  try {
+    const ctx = context();
+    await plugin.setup(ctx);
+    fs.writeFileSync(process.env.HYBRID_SAGE_PREFERENCES, JSON.stringify({ enabled: false }));
+    const off = { system: [] };
+    await ctx.state.hooks.get('context')(off);
+    assert.ok(off.system[0].text.includes('DISABLED'));
+    fs.writeFileSync(process.env.HYBRID_SAGE_PREFERENCES, JSON.stringify({ enabled: true, model_id: 'provider/chosen' }));
+    const on = { system: [] };
+    await ctx.state.hooks.get('context')(on);
+    assert.ok(on.system[0].text.includes('provider/chosen'));
+  } finally {
+    if (previous === undefined) delete process.env.HYBRID_SAGE_PREFERENCES;
+    else process.env.HYBRID_SAGE_PREFERENCES = previous;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
