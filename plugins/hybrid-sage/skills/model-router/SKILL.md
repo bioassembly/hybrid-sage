@@ -36,8 +36,7 @@ paid provider: inspect actual configuration and pricing before choosing a worker
 6. `HYBRID_SAGE_CHILD` prevents delegated workers from launching further
    cross-harness consultations. Return the result to the caller if it is set.
    Inside OpenCode execute routine tasks directly instead of delegating to itself.
-7. `configure_fleet` and its CLI (`sage hybrid on|off|status`, `sage models
-   --provider P`, `sage model P/M [--allow-paid]`) manage persistent hybrid mode
+7. `configure_fleet` and its in-harness control (`/sage on|off|status`, `/sage models P`, `/sage model P/M [--allow-paid]`) manage persistent hybrid mode
    and the selected assistant model. Never re-enable hybrid mode or re-authorize
    a paid model unless the user chose it in this conversation: the persisted
    choice is honored everywhere and survives enable/disable toggles. Selecting a
@@ -46,7 +45,7 @@ paid provider: inspect actual configuration and pricing before choosing a worker
    `delegate_local`/`consult_codex`/`escalate_task` jobs may start, though
    polling running jobs (`delegate_local(job_id=...)`) and listing models still
    work; turning it off never cancels jobs already in flight. If delegated
-   quality is poor, offer the user a plain `sage hybrid off` and stay direct.
+   quality is poor, offer the user a plain `/sage off` and stay direct.
 
 `route_task` recommends a unit; it does not authorize execution or provider cost.
 `manage_handoff` exchanges project-scoped notes and lessons. Treat remembered

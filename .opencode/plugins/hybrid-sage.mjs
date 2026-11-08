@@ -51,6 +51,12 @@ async function legacyServer({ client } = {}) {
 
       // 3. Register chat slash commands (/fleet, /route, /escalate)
       if (!config.command) config.command = {};
+      const sageInstructions = fs.readFileSync(path.join(repoRoot, 'skills/sage/SKILL.md'), 'utf8')
+        .replace(/^---\n[\s\S]*?\n---\n/, '');
+      config.command.sage = {
+        description: 'Choose the assistant model or turn hybrid mode on/off',
+        template: sageInstructions + '\n\nSAGE request: $ARGUMENTS',
+      };
       config.command['fleet'] = {
         description: 'Show live Hybrid SAGE fleet, OpenCode runtime, and bridge telemetry',
         template: 'Check fleet status using the `fleet_status` tool and report active units, OpenCode runtime state, and ROI token savings.',
@@ -152,13 +158,16 @@ export default {
     const hooks = await legacyServer();
     const config = {};
     await hooks.config(config);
-    const file = path.join(repoRoot, 'skills/model-router/SKILL.md');
-    const raw = fs.readFileSync(file, 'utf8');
-    const content = raw.replace(/^---\n[\s\S]*?\n---\n/, '');
-    const description = raw.match(/^description: (.+)$/m)?.[1] || 'Coordinate the three-harness fleet';
-    await ctx.skill.transform((editor) => editor.add({
-      id: 'model-router', name: 'model-router', description, path: file, content,
-    }));
+    await ctx.skill.transform((editor) => {
+      for (const name of ['model-router', 'sage']) {
+        const file = path.join(repoRoot, 'skills', name, 'SKILL.md');
+        const raw = fs.readFileSync(file, 'utf8');
+        editor.add({ id: name, name, path: file,
+          description: raw.match(/^description: (.+)$/m)?.[1] || name,
+          content: raw.replace(/^---\n[\s\S]*?\n---\n/, ''),
+        });
+      }
+    });
     await ctx.command.transform((editor) => {
       for (const [name, definition] of Object.entries(config.command)) {
         editor.add({ name, description: definition.description,

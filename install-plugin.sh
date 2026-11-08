@@ -35,6 +35,7 @@ echo "✔ Installed Antigravity plugin: ${AGY_PLUGINS_DIR}/hybrid-sage"
 
 mkdir -p "${HOME}/.gemini/config/skills"
 ln -sfn "${REPO_DIR}/skills/model-router" "${HOME}/.gemini/config/skills/model-router"
+ln -sfn "${REPO_DIR}/skills/sage" "${HOME}/.gemini/config/skills/sage"
 echo "✔ Linked Antigravity skill  : ${HOME}/.gemini/config/skills/model-router"
 
 AGY_MCP_CONFIG="${HOME}/.gemini/config/mcp_config.json"
@@ -74,11 +75,12 @@ if [[ -d "${OC_PLUGINS_DIR}/hybrid-sage" && ! -L "${OC_PLUGINS_DIR}/hybrid-sage"
 fi
 ln -sfn "${REPO_DIR}" "${OC_PLUGINS_DIR}/hybrid-sage"
 ln -sfn "${REPO_DIR}/skills/model-router" "${HOME}/.config/opencode/skills/model-router"
+ln -sfn "${REPO_DIR}/skills/sage" "${HOME}/.config/opencode/skills/sage"
 rm -f "${OC_COMMAND_DIR}/local.md"
 cp -p "${REPO_DIR}/.opencode/command/"*.md "${OC_COMMAND_DIR}/"
 
 echo "✔ Installed OpenCode plugin   : ${OC_PLUGINS_DIR}/hybrid-sage"
-echo "✔ Installed OpenCode commands : /fleet, /route, /escalate"
+echo "✔ Installed OpenCode commands : /sage, /fleet, /route, /escalate"
 
 OC_CONFIG="${HOME}/.config/opencode/opencode.json"
 if [[ -f "${OC_CONFIG}" ]]; then

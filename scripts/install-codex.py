@@ -21,16 +21,16 @@ def main() -> int:
         print("Codex CLI is not installed. Register plugins/mcp_server.py as a stdio MCP server after installation.", file=sys.stderr)
         return 1
     codex_home = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
-    skill = Path.home() / ".agents" / "skills" / "model-router"
-    target = repo / "skills" / "model-router"
-    if skill.exists() or skill.is_symlink():
-        if not skill.is_symlink() or skill.resolve() != target.resolve():
+    skills = [(Path.home() / '.agents/skills' / name, repo / 'skills' / name)
+              for name in ('model-router', 'sage')]
+    for skill, target in skills:
+        if (skill.exists() or skill.is_symlink()) and (not skill.is_symlink() or skill.resolve() != target.resolve()):
             print(f"Refusing to replace an unrelated skill at {skill}", file=sys.stderr)
             return 1
     cmd = [binary, "mcp", "add", "hybrid-sage", "--", sys.executable,
            str(repo / "plugins" / "mcp_server.py")]
     if args.dry_run:
-        print(f"Register stdio MCP in {codex_home / 'config.toml'}; link {skill} -> {target}")
+        print(f"Register stdio MCP in {codex_home / 'config.toml'}; link model-router and sage skills")
         return 0
     config = codex_home / "config.toml"
     if config.exists():
@@ -41,10 +41,11 @@ def main() -> int:
     proc = subprocess.run(cmd, check=False)
     if proc.returncode:
         return proc.returncode
-    skill.parent.mkdir(parents=True, exist_ok=True)
-    if not skill.is_symlink():
-        skill.symlink_to(target, target_is_directory=True)
-    print(f"Registered Hybrid SAGE in Codex; linked {skill}. Restart Codex to load it.")
+    for skill, target in skills:
+        skill.parent.mkdir(parents=True, exist_ok=True)
+        if not skill.is_symlink():
+            skill.symlink_to(target, target_is_directory=True)
+    print("Registered Hybrid SAGE and its sage control skill. Restart Codex to load it.")
     return 0
 
 

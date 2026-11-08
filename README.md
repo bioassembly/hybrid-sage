@@ -78,22 +78,37 @@ private datasets require a separately configured and verified local provider.
 
 ## Persistent fleet controls
 
-Run `bash install.sh` once to install the `sage` management CLI alongside the
-plugins. You can also ask your assistant to list/select a model or disable/enable
-hybrid mode through `configure_fleet`; ordinary Codex launches remain unchanged.
+Install once with `bash install.sh`, then control SAGE in the harness chat:
 
-Hybrid mode and the selected worker model are persistent choices, stored in
-`~/.config/hybrid-sage/preferences.json` (override the location with the
-`HYBRID_SAGE_PREFERENCES` environment variable). The harnesses honor that saved
-state and never re-enable hybrid mode or reset a paid selection on their own;
-you remain in control and can disable hybrid mode any time the delegated
-quality disappoints.
+```text
+/sage
+/sage models
+/sage models opencode
+/sage model opencode/glm-5.3-flash-free
+/sage off
+/sage on
+/sage status
+```
 
-- MCP: `configure_fleet(action="status"|"list"|"select"|"enable"|"disable", model_id=..., allow_paid=False, provider=..., offset=..., limit=...)`. Configuration never invokes a model and never stops running jobs (`running_jobs_stopped` stays false).
-- CLI: `sage hybrid on|off|status` inspects or toggles persistent hybrid mode, `sage models --provider opencode` lists exact catalog IDs with advertised prices, and `sage model provider/model [--allow-paid]` persists the assistant worker model.
-- Selecting a paid or unknown-price catalog model requires an explicit `allow_paid=true`. The initial default is free; a saved paid selection applies only after that explicit opt-in.
-- `enable`/`disable` only change whether *new* work starts. With hybrid off, new `delegate_local`, `consult_codex`, and `escalate_task` calls return a disabled status, while `delegate_local(job_id=...)` polling, `list_worker_models` discovery, and `route_task` still work. Already-running jobs are not cancelled.
-- A selected model survives enable/disable toggles: disable then re-enable picks the same assistant model and paid authorization again.
+`/sage` shows current mode, selected assistant, and the Models / Select model /
+On / Off choices. Controls call `configure_fleet` over the connected MCP directly;
+no terminal command or standalone SAGE CLI is needed. Selection persists across
+Codex, Antigravity, and OpenCode. Paid/unknown-price selections require explicit
+`--allow-paid`. Off blocks new delegation without cancelling running jobs; on
+retains the selected model. These settings are read on each call.
+
+OpenCode registers a native `/sage` command. Codex's app exposes the installed
+`sage` skill in its slash menu; clients that use skill mentions can invoke `$sage`
+or select it via `/skills`. Antigravity loads the same control skill. The MCP also
+exposes a `sage` prompt for clients with prompt support; the exact menu label is
+owned by the host. MCP registration alone cannot add a custom slash menu entry
+in an arbitrary client. Restart the harness once after installation to discover
+new skills/commands. The installer retires only its own previous CLI symlinks.
+
+Preferences remain in `~/.config/hybrid-sage/preferences.json` (override with
+`HYBRID_SAGE_PREFERENCES`). Agents must honor the saved choice and never re-enable
+hybrid mode automatically. If assistant quality is poor, use `/sage off` and the
+frontier model continues directly.
 
 The runtime matches the active provider exactly rather than probing an unrelated
 configured provider. Alternate worker selection does not depend on the default

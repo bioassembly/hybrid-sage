@@ -75,7 +75,7 @@ def main() -> int:
                     "id": msg_id,
                     "result": {
                         "protocolVersion": params.get("protocolVersion", "2024-11-05"),
-                        "capabilities": {"tools": {}},
+                        "capabilities": {"tools": {}, "prompts": {}},
                         "serverInfo": {"name": "hybrid-sage", "version": "3.0.0"},
                     },
                 }
@@ -84,6 +84,25 @@ def main() -> int:
             continue
         elif method == "tools/list":
             send_rpc({"jsonrpc": "2.0", "id": msg_id, "result": {"tools": core.TOOLS}})
+        elif method == "prompts/list":
+            send_rpc({"jsonrpc": "2.0", "id": msg_id, "result": {"prompts": [{
+                "name": "sage", "description": "Choose an assistant model or turn hybrid mode on/off",
+                "arguments": [{"name": "request", "description": "status, models, model <ID>, on, or off", "required": False}],
+            }]}})
+        elif method == "prompts/get":
+            if params.get("name") != "sage":
+                send_rpc({"jsonrpc": "2.0", "id": msg_id, "error": {"code": -32602, "message": "Unknown prompt"}})
+                continue
+            arguments = params.get("arguments") or {}
+            if not isinstance(arguments, dict) or not isinstance(arguments.get("request", ""), str):
+                send_rpc({"jsonrpc": "2.0", "id": msg_id, "error": {"code": -32602, "message": "request must be text"}})
+                continue
+            skill = (PLUGIN_DIR.parent / "skills/sage/SKILL.md").read_text().split("---", 2)[2].strip()
+            send_rpc({"jsonrpc": "2.0", "id": msg_id, "result": {
+                "description": "SAGE in-harness controls",
+                "messages": [{"role": "user", "content": {"type": "text", "text":
+                    skill + "\n\nSAGE request: " + arguments.get("request", "")}}],
+            }})
         elif method == "tools/call":
             name = params.get("name", "")
             raw_args = params.get("arguments")

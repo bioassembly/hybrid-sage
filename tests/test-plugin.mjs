@@ -56,6 +56,19 @@ test('v1 adapter preserves native registration for older clients', async () => {
   await hooks.config(config);
   assert.ok(config.mcp['hybrid-sage'].enabled);
   assert.ok(config.command.fleet);
+  assert.ok(config.command.sage.template.includes('configure_fleet'));
+});
+
+test('/sage forwards the control request to a chat prompt using the MCP-backed skill', async () => {
+  const ctx = context();
+  await plugin.setup(ctx);
+  assert.ok(ctx.state.skills.some((skill) => skill.name === 'sage'));
+  const command = ctx.state.commands.find((item) => item.name === 'sage');
+  await command.execute({ sessionID: 'sage-test', prompt: { text: 'off' }, delivery: 'queue' });
+  const text = ctx.state.prompts[0].text;
+  assert.ok(text.includes('action="disable"'));
+  assert.ok(text.endsWith('SAGE request: off'));
+  assert.ok(text.includes('Do not run a'));
 });
 
 test('persisted mode and model changes apply to existing plugin hooks without restart', async () => {
